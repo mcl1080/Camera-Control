@@ -1,8 +1,10 @@
 package io.github.mcl1080.cameracontrol.ptpip
 
+import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
+import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.UUID
@@ -41,6 +43,7 @@ class PtpIpConnection(
     var eventListener: ((PtpEvent) -> Unit)? = null
 
     private var commandSocket: Socket? = null
+    private var commandInput: InputStream? = null
     private var eventSocket: Socket? = null
     private var eventThread: Thread? = null
     private var nextTransactionId = 1
@@ -52,6 +55,9 @@ class PtpIpConnection(
         try {
             val cmd = openSocket(readTimeoutMs)
             commandSocket = cmd
+            // Buffered so a large live view frame arrives in few big reads.
+            val cmdIn = BufferedInputStream(cmd.getInputStream(), 256 * 1024)
+            commandInput = cmdIn
             PtpIpPacket.write(
                 cmd.getOutputStream(),
                 PacketType.INIT_COMMAND_REQUEST,
@@ -61,7 +67,7 @@ class PtpIpConnection(
                     .u32(PROTOCOL_VERSION)
                     .toByteArray(),
             )
-            val ack = PtpIpPacket.read(cmd.getInputStream())
+            val ack = PtpIpPacket.read(cmdIn)
             when (ack.type) {
                 PacketType.INIT_COMMAND_ACK -> Unit
                 PacketType.INIT_FAIL -> throw PtpIpException(
@@ -103,7 +109,7 @@ class PtpIpConnection(
         require(params.size <= 5) { "PTP allows at most 5 parameters" }
         val socket = commandSocket ?: throw PtpIpException("Not connected")
         val out = socket.getOutputStream()
-        val input = socket.getInputStream()
+        val input = commandInput ?: throw PtpIpException("Not connected")
 
         val tid = if (opcode == OpCode.OPEN_SESSION) 0 else nextTransactionId++
 
@@ -161,12 +167,14 @@ class PtpIpConnection(
         runCatching { commandSocket?.close() }
         eventSocket = null
         commandSocket = null
+        commandInput = null
     }
 
     private fun openSocket(readTimeout: Int): Socket {
         val socket = socketFactory.createSocket()
         socket.tcpNoDelay = true
         socket.keepAlive = true
+        socket.receiveBufferSize = 512 * 1024
         socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
         socket.soTimeout = readTimeout
         return socket

@@ -7,13 +7,16 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
 import io.github.mcl1080.cameracontrol.ptpip.NikonCamera
 import io.github.mcl1080.cameracontrol.ptpip.PtpIpConnection
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +29,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 
 enum class Status { Disconnected, Connecting, Connected, Busy }
@@ -50,9 +54,24 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private val _frame = MutableStateFlow<ImageBitmap?>(null)
     val frame: StateFlow<ImageBitmap?> = _frame.asStateFlow()
 
+    /** Live view frames per second, shown over the picture. */
+    private val _fps = MutableStateFlow(0)
+    val fps: StateFlow<Int> = _fps.asStateFlow()
+
     @Volatile
     private var camera: NikonCamera? = null
     private var pollJob: Job? = null
+
+    /** Set when the settings must be re-read in full (after a change from the app or the camera). */
+    @Volatile
+    private var exposureDirty = true
+
+    /** Setting changes sent but not yet confirmed; checks pause meanwhile so the old value doesn't flash back. */
+    private val pendingSets = AtomicInteger(0)
+
+    /** Runs setting changes one at a time, in the order they were tapped. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val settingsDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     fun setCameraIp(ip: String) = _state.update { it.copy(cameraIp = ip.trim()) }
 
@@ -102,14 +121,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setExposure(setting: SettingState, value: Long) {
         val cam = camera ?: return
-        viewModelScope.launch(Dispatchers.IO) {
+        // Show the new value straight away; the next full read confirms what the camera took.
+        _state.update { it.copy(exposure = it.exposure?.withValue(setting.setting, value)) }
+        pendingSets.incrementAndGet()
+        viewModelScope.launch(settingsDispatcher) {
             try {
                 cam.setExposure(setting, value)
-                refreshExposure(cam)
             } catch (e: Exception) {
                 log("Could not change setting: ${e.message}")
             }
+            exposureDirty = true
+            pendingSets.decrementAndGet()
         }
+    }
+
+    /** Moves a setting one step along the camera's list, like turning a command dial one click. */
+    fun stepExposure(setting: ExposureSetting, delta: Int) {
+        val current = _state.value.exposure?.settings?.get(setting) ?: return
+        if (!current.editable) return
+        val next = current.step(delta) ?: return
+        setExposure(current, next)
     }
 
     fun disconnect() {
@@ -118,6 +149,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         pollJob?.cancel()
         pollJob = null
         _frame.value = null
+        _fps.value = 0
         _state.update { it.copy(status = Status.Disconnected, cameraModel = null, exposure = null) }
         if (cam != null) {
             viewModelScope.launch(Dispatchers.IO) { runCatching { cam.close() } }
@@ -126,15 +158,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Runs while connected: fetches live view frames as fast as the camera sends them and
-     * re-reads the exposure settings about once a second, so turning a dial on the camera
-     * shows up in the app.
+     * Runs while connected. Live view frames are fetched back to back, and decoded on another
+     * thread so the next request goes out while the last frame is drawn. Between frames, one
+     * setting's value is checked at a time (a tiny request) so the picture never stalls for a
+     * full settings read; only when something changed are all settings read again.
      */
     private fun startPolling(cam: NikonCamera) {
         pollJob?.cancel()
+        exposureDirty = true
         pollJob = viewModelScope.launch(Dispatchers.IO) {
+            val frames = Channel<ByteArray>(Channel.CONFLATED)
+            launch(Dispatchers.Default) { decodeFrames(frames) }
+
             var liveViewRunning = false
-            var lastRefresh = 0L
+            var lastCheck = 0L
+            var watchIndex = 0
             while (isActive && camera === cam) {
                 try {
                     val wantLiveView = _state.value.liveViewOn
@@ -151,23 +189,32 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                         cam.stopLiveView()
                         liveViewRunning = false
                         _frame.value = null
+                        _fps.value = 0
                     }
 
-                    if (liveViewRunning && _state.value.status == Status.Connected) {
+                    val idle = _state.value.status == Status.Connected
+                    val settingsSettled = pendingSets.get() == 0
+                    if (idle && settingsSettled && exposureDirty) {
+                        exposureDirty = false
+                        refreshExposure(cam)
+                        watchIndex = 0
+                    }
+
+                    if (liveViewRunning && idle) {
                         val jpeg = cam.liveViewFrame()
-                        if (jpeg != null) {
-                            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)?.let { _frame.value = it.asImageBitmap() }
-                        } else {
-                            delay(50)
-                        }
+                        if (jpeg != null) frames.trySend(jpeg) else delay(30)
                     } else {
-                        delay(250)
+                        delay(200)
                     }
 
                     val now = System.currentTimeMillis()
-                    if (now - lastRefresh > 1_000 && _state.value.status == Status.Connected) {
-                        lastRefresh = now
-                        refreshExposure(cam)
+                    if (idle && settingsSettled && now - lastCheck >= WATCH_INTERVAL_MS) {
+                        lastCheck = now
+                        val watch = _state.value.exposure?.watchList().orEmpty()
+                        if (watch.isNotEmpty()) {
+                            val (code, type, lastSeen) = watch[watchIndex++ % watch.size]
+                            if (cam.getPropValue(code, type) != lastSeen) exposureDirty = true
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -180,6 +227,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     log("Camera error: ${e.message}")
                     delay(500)
                 }
+            }
+        }
+    }
+
+    private suspend fun decodeFrames(frames: Channel<ByteArray>) {
+        var windowStart = System.currentTimeMillis()
+        var count = 0
+        for (jpeg in frames) {
+            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
+            _frame.value = bitmap.asImageBitmap()
+            count++
+            val now = System.currentTimeMillis()
+            if (now - windowStart >= 1_000) {
+                _fps.value = (count * 1000 / (now - windowStart)).toInt()
+                windowStart = now
+                count = 0
             }
         }
     }
@@ -205,6 +268,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** One setting is checked this often, so each is checked about every 1.25 s. */
+        private const val WATCH_INTERVAL_MS = 250L
+
         /**
          * Nikon cameras remember the phones they have accepted by this ID, so it must stay
          * the same between launches or the camera asks to approve the phone every time.

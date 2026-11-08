@@ -51,13 +51,39 @@ data class SettingState(
 ) {
     val label: String get() = ExposureFormat.format(propCode, value)
     fun labelFor(v: Long) = ExposureFormat.format(propCode, v)
+
+    /** Position of the current value in [choices], or -1 if the camera reports one not listed. */
+    val index: Int get() = choices.indexOf(value)
+
+    /** The value [delta] steps along the camera's list from the current one, or null at either end. */
+    fun step(delta: Int): Long? {
+        val i = index
+        if (i < 0) return choices.firstOrNull()
+        return choices.getOrNull(i + delta)
+    }
 }
 
 data class ExposureState(
     val mode: ShootingMode,
     val modeValue: Long,
+    val modeDataType: Int = DataType.UINT16,
     val settings: Map<ExposureSetting, SettingState>,
-)
+) {
+    /**
+     * The cheap checks to run between full reads: each property code with its type and the
+     * value last seen. If any differs, the camera changed and a full [NikonCamera.readExposure] is due.
+     */
+    fun watchList(): List<Triple<Int, Int, Long>> = buildList {
+        if (modeValue >= 0) add(Triple(PropCode.EXPOSURE_PROGRAM_MODE, modeDataType, modeValue))
+        settings.values.forEach { add(Triple(it.propCode, it.dataType, it.value)) }
+    }
+
+    /** The same state with one setting's value replaced, for showing a change straight away. */
+    fun withValue(setting: ExposureSetting, value: Long): ExposureState {
+        val s = settings[setting] ?: return this
+        return copy(settings = settings + (setting to s.copy(value = value)))
+    }
+}
 
 /** Turns raw property values into the text a photographer expects. */
 object ExposureFormat {

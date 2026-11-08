@@ -78,6 +78,35 @@ class ExposureTest {
     }
 
     @Test
+    fun cheapValueChecksSpotAChangeMadeOnTheCamera() {
+        FakeNikonCamera(mode = 1).use { fake ->
+            open(fake).use { camera ->
+                val exposure = camera.readExposure()
+                fun changed() = exposure.watchList().any { (code, type, last) -> camera.getPropValue(code, type) != last }
+                assertFalse(changed())
+                fake.props[PropCode.EXPOSURE_INDEX] = 800L // photographer turns the ISO dial
+                assertTrue(changed())
+                fake.props[PropCode.EXPOSURE_INDEX] = 400L
+                fake.mode = 3 // mode dial to A
+                assertTrue(changed())
+            }
+        }
+    }
+
+    @Test
+    fun stepsThroughTheCamerasValues() {
+        FakeNikonCamera(mode = 1).use { fake ->
+            open(fake).use { camera ->
+                val aperture = camera.readExposure().settings.getValue(ExposureSetting.APERTURE) // f/5.6
+                assertEquals(630L, aperture.step(1))
+                assertEquals(500L, aperture.step(-1))
+                assertNull(aperture.copy(value = 800L).step(1)) // already at the end
+                assertEquals(400L, aperture.copy(value = 999L).step(1)) // unknown value: jump to first
+            }
+        }
+    }
+
+    @Test
     fun formatsValuesLikeACamera() {
         assertEquals("f/1.8", ExposureFormat.aperture(180))
         assertEquals("f/4", ExposureFormat.aperture(400))
