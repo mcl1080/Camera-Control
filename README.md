@@ -5,10 +5,12 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
 
 ## Status
 
-**Step 1 (this version): connection test.** The app connects to a Nikon camera over
-Wi-Fi, shows the camera model, and can take a photo that is saved to the memory card.
-
-Coming next: live view and exposure controls (step 2), then clock and GPS sync (step 3).
+- **Step 1 (done):** connect to a Nikon camera over Wi-Fi and take a photo to the memory card.
+- **Step 2 (this version):** live view on the phone, a shutter button, and pickers for shutter
+  speed, aperture, ISO and exposure compensation. Only the settings the current mode lets you
+  set are editable (for example, in A mode shutter speed is shown but set by the camera).
+  Settings changed on the camera's dials show up in the app within about a second.
+- **Step 3 (next):** clock and GPS sync.
 
 ## Project layout
 
