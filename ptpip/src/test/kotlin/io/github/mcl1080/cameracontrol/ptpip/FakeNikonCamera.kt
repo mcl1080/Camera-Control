@@ -39,6 +39,7 @@ class FakeNikonCamera(
             OpCode.NIKON_INITIATE_CAPTURE_REC_IN_MEDIA,
             OpCode.GET_DEVICE_PROP_DESC, OpCode.GET_DEVICE_PROP_VALUE, OpCode.SET_DEVICE_PROP_VALUE,
             OpCode.NIKON_START_LIVE_VIEW, OpCode.NIKON_END_LIVE_VIEW, OpCode.NIKON_GET_LIVE_VIEW_IMAGE,
+            OpCode.NIKON_AF_DRIVE, OpCode.NIKON_CHANGE_AF_AREA,
         ),
         eventsSupported = setOf(0x4002),
         devicePropertiesSupported = setOf(
@@ -82,6 +83,18 @@ class FakeNikonCamera(
 
     @Volatile
     var liveViewOn = false
+
+    /** Whether autofocus succeeds; false simulates a dark or featureless scene. */
+    @Volatile
+    var canFocus = true
+
+    /** Parameters of the last capture request, and the last focus point set. */
+    @Volatile
+    var lastCaptureParams: List<Int> = emptyList()
+    @Volatile
+    var afCenter = Pair(3000, 2000)
+
+    private var focusResultPending: Int? = null
 
     /** Bytes the fake sends as a live view frame: a fake Nikon header, then a tiny "JPEG". */
     val liveViewJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 1, 2, 3, 0xFF.toByte(), 0xD9.toByte())
@@ -140,6 +153,7 @@ class FakeNikonCamera(
         val opcode = r.u16()
         val tid = r.u32()
         receivedOpcodes += opcode
+        val params = PtpDataReader(req.payload, 10).let { pr -> List(pr.remaining / 4) { pr.u32() } }
 
         fun respond(code: Int) = PtpIpPacket.write(
             out, PacketType.OPERATION_RESPONSE, PtpDataWriter().u16(code).u32(tid).toByteArray(),
@@ -156,7 +170,17 @@ class FakeNikonCamera(
                 respond(ResponseCode.OK)
             }
             OpCode.NIKON_INITIATE_CAPTURE_REC_IN_MEDIA -> {
+                lastCaptureParams = params
                 busyRemaining = busyPollsAfterCapture
+                respond(ResponseCode.OK)
+            }
+            OpCode.NIKON_AF_DRIVE -> {
+                busyRemaining = 1
+                focusResultPending = if (canFocus) ResponseCode.OK else ResponseCode.NIKON_OUT_OF_FOCUS
+                respond(ResponseCode.OK)
+            }
+            OpCode.NIKON_CHANGE_AF_AREA -> {
+                afCenter = Pair(params[0], params[1])
                 respond(ResponseCode.OK)
             }
             OpCode.NIKON_DEVICE_READY -> {
@@ -164,7 +188,8 @@ class FakeNikonCamera(
                     busyRemaining--
                     respond(ResponseCode.DEVICE_BUSY)
                 } else {
-                    respond(ResponseCode.OK)
+                    respond(focusResultPending ?: ResponseCode.OK)
+                    focusResultPending = null
                 }
             }
             OpCode.GET_DEVICE_PROP_DESC -> {
@@ -217,13 +242,21 @@ class FakeNikonCamera(
                 if (!liveViewOn) {
                     respond(ResponseCode.NIKON_NOT_LIVE_VIEW)
                 } else {
-                    sendData(out, tid, ByteArray(384) { 0x11 } + liveViewJpeg)
+                    sendData(out, tid, liveViewHeader() + liveViewJpeg)
                     respond(ResponseCode.OK)
                 }
             }
             OpCode.OPEN_SESSION, OpCode.CLOSE_SESSION -> respond(ResponseCode.OK)
             else -> respond(ResponseCode.OPERATION_NOT_SUPPORTED)
         }
+    }
+
+    /** A 384-byte Nikon-style header: big-endian sizes and the focus area position. */
+    private fun liveViewHeader(): ByteArray {
+        val b = java.nio.ByteBuffer.allocate(384).order(java.nio.ByteOrder.BIG_ENDIAN)
+        listOf(640, 424, 6000, 4000, 6000, 4000, 3000, 2000, 300, 200, afCenter.first, afCenter.second)
+            .forEach { b.putShort(it.toShort()) }
+        return b.array()
     }
 
     private fun sendData(out: OutputStream, tid: Int, data: ByteArray) {

@@ -70,7 +70,7 @@ class ExposureTest {
                 // Not started yet: the camera says so, and the client starts it.
                 assertNull(camera.liveViewFrame())
                 assertTrue(fake.liveViewOn)
-                assertArrayEquals(fake.liveViewJpeg, camera.liveViewFrame())
+                assertArrayEquals(fake.liveViewJpeg, camera.liveViewFrame()!!.jpeg)
                 camera.stopLiveView()
                 assertFalse(fake.liveViewOn)
             }

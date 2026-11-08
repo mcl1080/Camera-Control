@@ -9,6 +9,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
+import io.github.mcl1080.cameracontrol.ptpip.LiveViewFrame
+import io.github.mcl1080.cameracontrol.ptpip.LiveViewInfo
 import io.github.mcl1080.cameracontrol.ptpip.NikonCamera
 import io.github.mcl1080.cameracontrol.ptpip.PtpIpConnection
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
@@ -32,7 +34,12 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 
-enum class Status { Disconnected, Connecting, Connected, Busy }
+enum class Status { Disconnected, Connecting, Connected, Focusing, Busy }
+
+enum class FocusResult { Focusing, Focused, Failed }
+
+/** Where focus was asked for, as fractions (0..1) of the live view picture, and how it went. */
+data class FocusMarker(val x: Float, val y: Float, val result: FocusResult)
 
 data class UiState(
     val status: Status = Status.Disconnected,
@@ -40,6 +47,7 @@ data class UiState(
     val cameraModel: String? = null,
     val liveViewOn: Boolean = true,
     val exposure: ExposureState? = null,
+    val focus: FocusMarker? = null,
     val log: List<String> = emptyList(),
 )
 
@@ -53,6 +61,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     /** Latest live view frame. Kept apart from [state] so frames don't redraw the whole screen. */
     private val _frame = MutableStateFlow<ImageBitmap?>(null)
     val frame: StateFlow<ImageBitmap?> = _frame.asStateFlow()
+
+    /** Latest live view header details: the focus coordinate space and current focus area. */
+    private val _liveViewInfo = MutableStateFlow<LiveViewInfo?>(null)
+    val liveViewInfo: StateFlow<LiveViewInfo?> = _liveViewInfo.asStateFlow()
 
     /** Live view frames per second, shown over the picture. */
     private val _fps = MutableStateFlow(0)
@@ -108,6 +120,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun takePhoto() {
         val cam = camera ?: return
+        if (_state.value.status != Status.Connected) return
         _state.update { it.copy(status = Status.Busy) }
         viewModelScope.launch {
             try {
@@ -116,6 +129,52 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 log("Photo failed: ${e.message}")
             }
             if (cam.isConnected) _state.update { it.copy(status = Status.Connected) } else connectionLost()
+        }
+    }
+
+    /** Focuses at the camera's current focus point, like a half-press of the shutter. */
+    fun focus() {
+        val info = _liveViewInfo.value
+        val marker = info?.let { it.afCenterX.toFloat() / it.wholeWidth to it.afCenterY.toFloat() / it.wholeHeight }
+        runFocus(marker, moveTo = null)
+    }
+
+    /** Moves the focus point to where the live view was tapped ([x], [y] as 0..1 fractions), then focuses. */
+    fun tapToFocus(x: Float, y: Float) {
+        val info = _liveViewInfo.value
+        if (info == null) {
+            log("Can't tell where that is on the camera yet; focusing on the current point instead")
+            runFocus(x to y, moveTo = null)
+            return
+        }
+        val target = (x * info.wholeWidth).toInt().coerceIn(0, info.wholeWidth) to
+            (y * info.wholeHeight).toInt().coerceIn(0, info.wholeHeight)
+        runFocus(x to y, moveTo = target)
+    }
+
+    private fun runFocus(marker: Pair<Float, Float>?, moveTo: Pair<Int, Int>?) {
+        val cam = camera ?: return
+        if (_state.value.status != Status.Connected) return
+        fun show(result: FocusResult) = _state.update {
+            it.copy(focus = marker?.let { (x, y) -> FocusMarker(x, y, result) })
+        }
+        _state.update { it.copy(status = Status.Focusing) }
+        show(FocusResult.Focusing)
+        viewModelScope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    moveTo?.let { (x, y) -> cam.setFocusPoint(x, y) }
+                    cam.autofocus()
+                }
+            } catch (e: Exception) {
+                log("Focus failed: ${e.message}")
+                false
+            }
+            if (!result) log("Couldn't focus. Check the lens is set to AF and there's enough light and detail.")
+            show(if (result) FocusResult.Focused else FocusResult.Failed)
+            if (cam.isConnected) _state.update { it.copy(status = Status.Connected) } else connectionLost()
+            delay(2_000)
+            _state.update { if (it.status != Status.Focusing) it.copy(focus = null) else it }
         }
     }
 
@@ -150,7 +209,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         pollJob = null
         _frame.value = null
         _fps.value = 0
-        _state.update { it.copy(status = Status.Disconnected, cameraModel = null, exposure = null) }
+        _liveViewInfo.value = null
+        _state.update { it.copy(status = Status.Disconnected, cameraModel = null, exposure = null, focus = null) }
         if (cam != null) {
             viewModelScope.launch(Dispatchers.IO) { runCatching { cam.close() } }
             log("Disconnected")
@@ -167,7 +227,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         pollJob?.cancel()
         exposureDirty = true
         pollJob = viewModelScope.launch(Dispatchers.IO) {
-            val frames = Channel<ByteArray>(Channel.CONFLATED)
+            val frames = Channel<LiveViewFrame>(Channel.CONFLATED)
             launch(Dispatchers.Default) { decodeFrames(frames) }
 
             var liveViewRunning = false
@@ -201,8 +261,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     if (liveViewRunning && idle) {
-                        val jpeg = cam.liveViewFrame()
-                        if (jpeg != null) frames.trySend(jpeg) else delay(30)
+                        val frame = cam.liveViewFrame()
+                        if (frame != null) frames.trySend(frame) else delay(30)
                     } else {
                         delay(200)
                     }
@@ -231,12 +291,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun decodeFrames(frames: Channel<ByteArray>) {
+    private suspend fun decodeFrames(frames: Channel<LiveViewFrame>) {
         var windowStart = System.currentTimeMillis()
         var count = 0
-        for (jpeg in frames) {
-            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
+        for (frame in frames) {
+            val bitmap = BitmapFactory.decodeByteArray(frame.jpeg, 0, frame.jpeg.size) ?: continue
             _frame.value = bitmap.asImageBitmap()
+            if (frame.info != null) _liveViewInfo.value = frame.info
             count++
             val now = System.currentTimeMillis()
             if (now - windowStart >= 1_000) {
