@@ -32,6 +32,7 @@ import io.github.mcl1080.cameracontrol.MainActivity
 import io.github.mcl1080.cameracontrol.nikonble.GeoFix
 import io.github.mcl1080.cameracontrol.nikonble.LocationPayloadEncoder
 import io.github.mcl1080.cameracontrol.nikonble.TimePayloadEncoder
+import android.os.SystemClock
 import android.util.Log
 import java.text.DateFormat
 import java.util.Date
@@ -58,8 +59,13 @@ class LocationSyncService : Service() {
     @Volatile
     private var running = false
 
+    /** Newest fix from any provider, for status messages. */
     @Volatile
     private var latestFix: Location? = null
+
+    /** Newest fix that was accurate enough to send; reused while the phone briefly loses GPS. */
+    @Volatile
+    private var lastGoodFix: Location? = null
 
     // Every method is overridden: on Android 10 they have no default implementations.
     private val locationListener = object : LocationListener {
@@ -67,9 +73,18 @@ class LocationSyncService : Service() {
             val current = latestFix
             // Prefer a GPS fix; take a network fix only if there's no recent GPS one.
             if (current == null || location.provider == LocationManager.GPS_PROVIDER ||
-                location.time - current.time > FIX_MAX_AGE_MS
+                newerByMs(location, current) > FIX_MAX_AGE_MS
             ) {
                 latestFix = location
+            }
+            if (isAccurate(location)) {
+                val good = lastGoodFix
+                // Take a newer accurate fix, unless it's a coarser one arriving just after a better one.
+                if (good == null || newerByMs(location, good) > GOOD_FIX_REPLACE_MS ||
+                    location.accuracy <= good.accuracy + ACCURACY_SLACK_M
+                ) {
+                    lastGoodFix = location
+                }
             }
         }
 
@@ -123,7 +138,10 @@ class LocationSyncService : Service() {
         val intervalMs = LocationSync.intervalSeconds(this) * 1000L
         for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
             if (runCatching { lm.isProviderEnabled(provider) }.getOrDefault(false)) {
-                lm.requestLocationUpdates(provider, intervalMs.coerceAtMost(5_000L), 0f, locationListener, Looper.getMainLooper())
+                // GPS runs every second for as long as sync is on, so it keeps its lock between
+                // sends instead of re-acquiring satellites each time.
+                val minTime = if (provider == LocationManager.GPS_PROVIDER) GPS_UPDATE_MS else intervalMs.coerceAtMost(5_000L)
+                lm.requestLocationUpdates(provider, minTime, 0f, locationListener, Looper.getMainLooper())
                 lm.getLastKnownLocation(provider)?.let { locationListener.onLocationChanged(it) }
             }
         }
@@ -153,12 +171,12 @@ class LocationSyncService : Service() {
                 status("Connected to camera")
             }
 
-            val fix = latestFix
+            val fix = lastGoodFix?.takeIf { ageMs(it) <= FIX_MAX_AGE_MS }
+            val newest = latestFix
             when {
-                fix == null -> status("Waiting for the phone's GPS")
-                System.currentTimeMillis() - fix.time > FIX_MAX_AGE_MS -> status("Waiting for a fresh GPS fix")
-                fix.hasAccuracy() && fix.accuracy > MAX_ACCURACY_M ->
-                    status("GPS too imprecise (±${fix.accuracy.toInt()} m); waiting")
+                fix == null && newest == null -> status("Waiting for the phone's GPS")
+                fix == null && ageMs(newest!!) > FIX_MAX_AGE_MS -> status("Waiting for a fresh GPS fix")
+                fix == null -> status("GPS too imprecise (±${newest!!.accuracy.toInt()} m); waiting")
                 else -> {
                     c.writeLocationPayload(LocationPayloadEncoder.encode(fix.toGeoFix()))
                     LocationSync.update {
@@ -272,6 +290,14 @@ class LocationSyncService : Service() {
         LocationSync.update { it.copy(timeWriteResult = result) }
     }
 
+    private fun isAccurate(location: Location) = !location.hasAccuracy() || location.accuracy <= MAX_ACCURACY_M
+
+    /** How old a fix is, by the monotonic clock so a phone clock change can't skew it. */
+    private fun ageMs(location: Location) =
+        (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000
+
+    private fun newerByMs(a: Location, b: Location) = (a.elapsedRealtimeNanos - b.elapsedRealtimeNanos) / 1_000_000
+
     private fun status(message: String) {
         LocationSync.update { it.copy(message = message) }
         updateNotification(message)
@@ -322,5 +348,8 @@ class LocationSyncService : Service() {
         private const val BACKOFF_MAX_SECONDS = 60L
         private const val MAX_ACCURACY_M = 50f
         private const val FIX_MAX_AGE_MS = 60_000L
+        private const val GPS_UPDATE_MS = 1_000L
+        private const val GOOD_FIX_REPLACE_MS = 10_000L
+        private const val ACCURACY_SLACK_M = 10f
     }
 }
