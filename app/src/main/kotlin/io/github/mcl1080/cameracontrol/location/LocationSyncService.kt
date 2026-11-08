@@ -32,6 +32,9 @@ import io.github.mcl1080.cameracontrol.MainActivity
 import io.github.mcl1080.cameracontrol.nikonble.GeoFix
 import io.github.mcl1080.cameracontrol.nikonble.LocationPayloadEncoder
 import io.github.mcl1080.cameracontrol.nikonble.TimePayloadEncoder
+import android.util.Log
+import java.text.DateFormat
+import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -146,7 +149,7 @@ class LocationSyncService : Service() {
                 client = c
                 backoffSeconds = BACKOFF_START_SECONDS
                 LocationSync.update { it.copy(connected = true) }
-                runCatching { c.writeTimePayload(TimePayloadEncoder.encode()) }
+                sendTime(c)
                 status("Connected to camera")
             }
 
@@ -253,6 +256,22 @@ class LocationSyncService : Service() {
         return current
     }
 
+    /** Writes the phone's time to the camera and records whether the camera accepted it. */
+    private fun sendTime(c: NikonBleClient) {
+        val result = if (!c.hasTimeCharacteristic()) {
+            "Camera doesn't offer it"
+        } else {
+            val payload = TimePayloadEncoder.encode()
+            val hex = payload.joinToString(" ") { "%02X".format(it) }
+            runCatching { c.writeTimePayload(payload) }.fold(
+                onSuccess = { "Accepted at ${DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date())} ($hex)" },
+                onFailure = { "Rejected: ${it.message} ($hex)" },
+            )
+        }
+        Log.i(TAG, "Bluetooth time write: $result")
+        LocationSync.update { it.copy(timeWriteResult = result) }
+    }
+
     private fun status(message: String) {
         LocationSync.update { it.copy(message = message) }
         updateNotification(message)
@@ -297,6 +316,7 @@ class LocationSyncService : Service() {
         private const val NIKON_COMPANY_ID = 0x0399
         private const val RECONNECT_ATTEMPTS = 4
         private const val RECONNECT_RETRY_DELAY_MS = 1_200L
+        private const val TAG = "LocationSync"
         private const val SCAN_TIMEOUT_MS = 12_000L
         private const val BACKOFF_START_SECONDS = 5L
         private const val BACKOFF_MAX_SECONDS = 60L

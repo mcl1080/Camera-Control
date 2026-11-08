@@ -23,6 +23,8 @@ data class LocationSyncStatus(
     val message: String? = null,
     val lastSentAtMillis: Long? = null,
     val lastAccuracyMeters: Float? = null,
+    /** What happened to the last Bluetooth clock write (accepted, rejected, or not offered). */
+    val timeWriteResult: String? = null,
     val intervalSeconds: Int = LocationSync.DEFAULT_INTERVAL_SECONDS,
 )
 
