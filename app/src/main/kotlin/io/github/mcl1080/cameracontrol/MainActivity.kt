@@ -113,7 +113,13 @@ class MainActivity : ComponentActivity() {
                             if (!connected) {
                                 ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
                             } else if (state.screen == Screen.Home) {
-                                HomeScreen(state, onOpenRemote = viewModel::openRemote, onDisconnect = viewModel::disconnect)
+                                HomeScreen(
+                                    state,
+                                    onOpenRemote = viewModel::openRemote,
+                                    onSyncClock = viewModel::syncClock,
+                                    onAutoSyncClockChange = viewModel::setAutoSyncClock,
+                                    onDisconnect = viewModel::disconnect,
+                                )
                             } else {
                                 RemoteScreen(
                                     state = state,
@@ -163,7 +169,13 @@ private fun ConnectScreen(state: UiState, onIpChange: (String) -> Unit, onConnec
 
 /** The landing page once connected: what the camera is and how it's doing, and the way to the remote. */
 @Composable
-private fun HomeScreen(state: UiState, onOpenRemote: () -> Unit, onDisconnect: () -> Unit) {
+private fun HomeScreen(
+    state: UiState,
+    onOpenRemote: () -> Unit,
+    onSyncClock: () -> Unit,
+    onAutoSyncClockChange: (Boolean) -> Unit,
+    onDisconnect: () -> Unit,
+) {
     val info = state.deviceInfo
     val status = state.cameraStatus
     val exposure = state.exposure
@@ -200,10 +212,32 @@ private fun HomeScreen(state: UiState, onOpenRemote: () -> Unit, onDisconnect: (
     Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
         Text("Remote & live view", style = MaterialTheme.typography.titleMedium)
     }
-    FilledTonalButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-        Text("Time & location sync (coming next)")
+    InfoCard("Time & location") {
+        InfoRow("Camera clock", clockSummary(state.clockOffsetSeconds))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Sync clock on connect", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Switch(checked = state.autoSyncClock, onCheckedChange = onAutoSyncClockChange)
+        }
+        FilledTonalButton(onClick = onSyncClock, enabled = state.status == Status.Connected, modifier = Modifier.fillMaxWidth()) {
+            Text("Sync clock now")
+        }
+        InfoRow("Location", "coming soon (Bluetooth)")
     }
     TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+}
+
+/** "In sync", or how far the camera's clock is from the phone's. */
+private fun clockSummary(offsetSeconds: Long?): String {
+    if (offsetSeconds == null) return "–"
+    val abs = kotlin.math.abs(offsetSeconds)
+    if (abs <= 2) return "In sync with phone"
+    val amount = when {
+        abs < 60 -> "$abs s"
+        abs < 3600 -> "${abs / 60} min ${abs % 60} s"
+        abs < 86_400 -> "${abs / 3600} h ${abs % 3600 / 60} min"
+        else -> "${abs / 86_400} days"
+    }
+    return if (offsetSeconds < 0) "$amount behind" else "$amount ahead"
 }
 
 private fun cardSummary(card: StorageInfo): String {

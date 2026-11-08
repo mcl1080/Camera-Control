@@ -14,7 +14,9 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
   switched off to keep a focus you set or to shoot in manual focus.
 - After connecting, a landing page shows the camera's model, firmware, battery, mode, lens
   focal length and memory cards (shots left, free space), with the remote on its own screen.
-- **Step 3 (next):** clock and GPS sync.
+- **Step 3 (in progress):** clock sync over Wi-Fi is done: the camera's clock is set from the
+  phone when connecting (can be turned off) or with "Sync clock now", and the landing page
+  shows whether the clock is in sync. GPS sync needs Nikon's Bluetooth link and comes next.
 
 ## Project layout
 

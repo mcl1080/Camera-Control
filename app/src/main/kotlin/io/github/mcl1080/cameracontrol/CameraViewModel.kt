@@ -30,6 +30,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.time.Duration
+import java.time.LocalDateTime
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -56,6 +58,10 @@ data class UiState(
     val liveViewOn: Boolean = true,
     /** Whether Shoot focuses first. Off lets you keep a focus you set, or shoot in manual focus. */
     val afOnShoot: Boolean = true,
+    /** Camera clock minus phone clock, in seconds, when last read. Null if unknown. */
+    val clockOffsetSeconds: Long? = null,
+    /** Set the camera's clock from the phone each time the app connects. */
+    val autoSyncClock: Boolean = true,
     val exposure: ExposureState? = null,
     val focus: FocusMarker? = null,
     val log: List<String> = emptyList(),
@@ -83,7 +89,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     init {
-        _state.update { it.copy(afOnShoot = prefs.getBoolean(PREF_AF_ON_SHOOT, true)) }
+        _state.update {
+            it.copy(
+                afOnShoot = prefs.getBoolean(PREF_AF_ON_SHOOT, true),
+                autoSyncClock = prefs.getBoolean(PREF_AUTO_SYNC_CLOCK, true),
+            )
+        }
     }
 
     @Volatile
@@ -122,7 +133,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             )
             val cam = NikonCamera(connection).also { it.log = ::log }
             try {
-                withContext(Dispatchers.IO) { cam.open() }
+                withContext(Dispatchers.IO) {
+                    cam.open()
+                    if (_state.value.autoSyncClock) {
+                        runCatching { cam.setClock(LocalDateTime.now()) }
+                            .onFailure { log("Clock sync failed: ${it.message}") }
+                    }
+                }
                 camera = cam
                 _state.update {
                     it.copy(
@@ -146,6 +163,30 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     fun openRemote() = _state.update { it.copy(screen = Screen.Remote) }
 
     fun goHome() = _state.update { it.copy(screen = Screen.Home, focus = null) }
+
+    fun setAutoSyncClock(on: Boolean) {
+        prefs.edit().putBoolean(PREF_AUTO_SYNC_CLOCK, on).apply()
+        _state.update { it.copy(autoSyncClock = on) }
+    }
+
+    /** Sets the camera's clock to the phone's local time now. */
+    fun syncClock() {
+        val cam = camera ?: return
+        viewModelScope.launch(settingsDispatcher) {
+            try {
+                cam.setClock(LocalDateTime.now())
+                readClockOffset(cam)
+            } catch (e: Exception) {
+                log("Clock sync failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun readClockOffset(cam: NikonCamera) {
+        val cameraTime = cam.readClock()
+        val offset = cameraTime?.let { Duration.between(LocalDateTime.now(), it).seconds }
+        _state.update { it.copy(clockOffsetSeconds = offset) }
+    }
 
     fun setAfOnShoot(on: Boolean) {
         prefs.edit().putBoolean(PREF_AF_ON_SHOOT, on).apply()
@@ -253,6 +294,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 cameraModel = null,
                 deviceInfo = null,
                 cameraStatus = null,
+                clockOffsetSeconds = null,
                 exposure = null,
                 focus = null,
             )
@@ -322,6 +364,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                         lastStatus = now
                         val status = cam.readStatus()
                         _state.update { it.copy(cameraStatus = status) }
+                        readClockOffset(cam)
                     }
                     if (idle && settingsSettled && now - lastCheck >= WATCH_INTERVAL_MS) {
                         lastCheck = now
@@ -392,6 +435,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
         private const val PREFS = "camera_control"
         private const val PREF_AF_ON_SHOOT = "af_on_shoot"
+        private const val PREF_AUTO_SYNC_CLOCK = "auto_sync_clock"
 
         /**
          * Nikon cameras remember the phones they have accepted by this ID, so it must stay
