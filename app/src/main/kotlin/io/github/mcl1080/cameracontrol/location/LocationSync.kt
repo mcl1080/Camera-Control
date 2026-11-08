@@ -23,8 +23,6 @@ data class LocationSyncStatus(
     val message: String? = null,
     val lastSentAtMillis: Long? = null,
     val lastAccuracyMeters: Float? = null,
-    /** What happened to the last Bluetooth clock write (accepted, rejected, or not offered). */
-    val timeWriteResult: String? = null,
     /** Location is set to "Allow all the time", so sync can restart on its own after a reboot. */
     val backgroundAllowed: Boolean = false,
     val intervalSeconds: Int = LocationSync.DEFAULT_INTERVAL_SECONDS,

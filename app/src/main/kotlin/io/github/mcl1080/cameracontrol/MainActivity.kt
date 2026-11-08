@@ -322,7 +322,6 @@ private fun LocationCard(status: LocationSyncStatus, actions: LocationActions) {
                             (status.lastAccuracyMeters?.let { " (±${it.toInt()} m)" } ?: "")
                     } ?: "–",
                 )
-                status.timeWriteResult?.let { Text("Clock over Bluetooth: $it", style = MaterialTheme.typography.bodySmall) }
             }
             Text("Send every", style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

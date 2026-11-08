@@ -6,7 +6,6 @@ package io.github.mcl1080.cameracontrol.location
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import io.github.mcl1080.cameracontrol.canStartLocationSyncInBackground
 
 /**
@@ -20,11 +19,7 @@ class BootReceiver : BroadcastReceiver() {
             intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) return
         if (!LocationSync.isEnabled(context) || LocationSync.savedIdentity(context) == null) return
-        if (!canStartLocationSyncInBackground(context)) {
-            Log.i("LocationSync", "Not starting after boot: background location not allowed")
-            return
-        }
+        if (!canStartLocationSyncInBackground(context)) return
         runCatching { LocationSync.startService(context) }
-            .onFailure { Log.w("LocationSync", "Couldn't start location sync after boot", it) }
     }
 }
