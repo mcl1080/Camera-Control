@@ -31,39 +31,73 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         log("Session open")
     }
 
-    /** Takes a photo and saves it to the camera's memory card, the same as pressing the shutter. */
-    fun capture() {
+    /**
+     * Takes a photo and saves it to the camera's memory card. With [autofocus] the camera
+     * focuses first, like a half-press then full press of the shutter button.
+     */
+    fun capture(autofocus: Boolean = true) {
         val opcode: Int
         val params: IntArray
         when {
             deviceInfo.supports(OpCode.NIKON_INITIATE_CAPTURE_REC_IN_MEDIA) -> {
-                // 0xFFFFFFFF = autofocus then release; second parameter 0 = record to card.
+                // First parameter: 0xFFFFFFFE = autofocus then release, 0xFFFFFFFF = release without AF.
+                // Second parameter: 0 = record to the memory card.
                 opcode = OpCode.NIKON_INITIATE_CAPTURE_REC_IN_MEDIA
-                params = intArrayOf(-1, 0)
+                params = intArrayOf(if (autofocus) CAPTURE_WITH_AF else CAPTURE_WITHOUT_AF, 0)
             }
             else -> {
                 opcode = OpCode.INITIATE_CAPTURE
                 params = intArrayOf(0, 0)
             }
         }
-        log("Capture using operation 0x%04X".format(opcode))
+        log("Shoot${if (autofocus) " with autofocus" else ""}")
         val resp = connection.transaction(opcode, params)
         if (!resp.isOk) throw PtpResponseException(resp.code, opcode)
-        waitUntilReady()
+        val done = waitUntilReady()
+        if (done != ResponseCode.OK) throw PtpResponseException(done, opcode)
         log("Photo taken")
     }
 
-    /** Nikon cameras report busy while they focus and write the file; poll until done. */
-    private fun waitUntilReady(timeoutMs: Long = 30_000) {
-        if (!deviceInfo.supports(OpCode.NIKON_DEVICE_READY)) return
+    // ---- Focus ----
+
+    /**
+     * Focuses at the current focus point. Returns true if the camera achieved focus,
+     * false if it could not (too dark, too close, no contrast, or the lens is set to MF).
+     */
+    fun autofocus(): Boolean {
+        if (!deviceInfo.supports(OpCode.NIKON_AF_DRIVE)) throw PtpIpException("This camera does not offer autofocus over Wi-Fi")
+        val resp = connection.transaction(OpCode.NIKON_AF_DRIVE)
+        if (resp.code == ResponseCode.NIKON_OUT_OF_FOCUS) return false
+        if (!resp.isOk) throw PtpResponseException(resp.code, OpCode.NIKON_AF_DRIVE)
+        return when (val done = waitUntilReady(timeoutMs = 10_000)) {
+            ResponseCode.OK -> true
+            ResponseCode.NIKON_OUT_OF_FOCUS -> false
+            else -> throw PtpResponseException(done, OpCode.NIKON_AF_DRIVE)
+        }
+    }
+
+    /**
+     * Moves the focus point. [x] and [y] are in the camera's live view coordinate space,
+     * [LiveViewInfo.wholeWidth] by [LiveViewInfo.wholeHeight].
+     */
+    fun setFocusPoint(x: Int, y: Int) {
+        if (!deviceInfo.supports(OpCode.NIKON_CHANGE_AF_AREA)) throw PtpIpException("This camera does not let the app move the focus point")
+        val resp = connection.transaction(OpCode.NIKON_CHANGE_AF_AREA, intArrayOf(x, y))
+        if (!resp.isOk) throw PtpResponseException(resp.code, OpCode.NIKON_CHANGE_AF_AREA)
+        waitUntilReady(timeoutMs = 5_000)
+    }
+
+    /**
+     * Nikon cameras report busy while they focus and write the file; poll until done.
+     * Returns the final response: OK, or an error such as [ResponseCode.NIKON_OUT_OF_FOCUS].
+     */
+    private fun waitUntilReady(timeoutMs: Long = 30_000): Int {
+        if (!deviceInfo.supports(OpCode.NIKON_DEVICE_READY)) return ResponseCode.OK
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val resp = connection.transaction(OpCode.NIKON_DEVICE_READY)
-            when (resp.code) {
-                ResponseCode.OK -> return
-                ResponseCode.DEVICE_BUSY -> Thread.sleep(100)
-                else -> throw PtpResponseException(resp.code, OpCode.NIKON_DEVICE_READY)
-            }
+            if (resp.code != ResponseCode.DEVICE_BUSY) return resp.code
+            Thread.sleep(50)
         }
         throw PtpIpException("Camera stayed busy for more than ${timeoutMs / 1000} s")
     }
@@ -146,7 +180,8 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         }
         val resp = connection.transaction(OpCode.NIKON_START_LIVE_VIEW)
         if (!resp.isOk) throw PtpResponseException(resp.code, OpCode.NIKON_START_LIVE_VIEW)
-        waitUntilReady(timeoutMs = 5_000)
+        val ready = waitUntilReady(timeoutMs = 5_000)
+        if (ready != ResponseCode.OK) throw PtpResponseException(ready, OpCode.NIKON_START_LIVE_VIEW)
         log("Live view started")
     }
 
@@ -157,13 +192,13 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
     }
 
     /**
-     * Fetches one live view frame as JPEG bytes, or null if the camera is busy
-     * (for example while it takes a photo). Live view is restarted if the camera stopped it.
+     * Fetches one live view frame, or null if the camera is busy (for example while it takes
+     * a photo). Live view is restarted if the camera stopped it.
      */
-    fun liveViewFrame(): ByteArray? {
+    fun liveViewFrame(): LiveViewFrame? {
         val resp = connection.transaction(OpCode.NIKON_GET_LIVE_VIEW_IMAGE)
         return when (resp.code) {
-            ResponseCode.OK -> resp.data?.let { extractJpeg(it) }
+            ResponseCode.OK -> resp.data?.let { LiveViewFrame.parse(it) }
             ResponseCode.DEVICE_BUSY -> null
             ResponseCode.NIKON_NOT_LIVE_VIEW -> {
                 startLiveView()
@@ -182,18 +217,7 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
 
     companion object {
         private const val SESSION_ID = 1
-
-        /**
-         * Nikon puts a model-specific header (focus area, level, etc.) before the JPEG.
-         * Rather than hard-code its size per model, find the JPEG start marker.
-         */
-        fun extractJpeg(data: ByteArray): ByteArray? {
-            for (i in 0 until data.size - 2) {
-                if (data[i] == 0xFF.toByte() && data[i + 1] == 0xD8.toByte() && data[i + 2] == 0xFF.toByte()) {
-                    return data.copyOfRange(i, data.size)
-                }
-            }
-            return null
-        }
+        private const val CAPTURE_WITH_AF = -2 // 0xFFFFFFFE
+        private const val CAPTURE_WITHOUT_AF = -1 // 0xFFFFFFFF
     }
 }

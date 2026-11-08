@@ -6,7 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -54,7 +56,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
+import io.github.mcl1080.cameracontrol.ptpip.LiveViewInfo
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
 
 class MainActivity : ComponentActivity() {
@@ -80,6 +88,7 @@ class MainActivity : ComponentActivity() {
                     val state by viewModel.state.collectAsStateWithLifecycle()
                     val frame by viewModel.frame.collectAsStateWithLifecycle()
                     val fps by viewModel.fps.collectAsStateWithLifecycle()
+                    val liveViewInfo by viewModel.liveViewInfo.collectAsStateWithLifecycle()
                     Column(
                         Modifier
                             .fillMaxSize()
@@ -94,6 +103,9 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 frame = frame,
                                 fps = fps,
+                                liveViewInfo = liveViewInfo,
+                                onTapToFocus = viewModel::tapToFocus,
+                                onFocus = viewModel::focus,
                                 onLiveViewChange = viewModel::setLiveView,
                                 onTakePhoto = viewModel::takePhoto,
                                 onSetExposure = viewModel::setExposure,
@@ -136,6 +148,9 @@ private fun RemoteScreen(
     state: UiState,
     frame: ImageBitmap?,
     fps: Int,
+    liveViewInfo: LiveViewInfo?,
+    onTapToFocus: (Float, Float) -> Unit,
+    onFocus: () -> Unit,
     onLiveViewChange: (Boolean) -> Unit,
     onTakePhoto: () -> Unit,
     onSetExposure: (SettingState, Long) -> Unit,
@@ -152,7 +167,15 @@ private fun RemoteScreen(
         TextButton(onClick = onDisconnect) { Text("Disconnect") }
     }
 
-    LiveView(frame, state.liveViewOn, fps)
+    LiveView(
+        frame = frame,
+        on = state.liveViewOn,
+        fps = fps,
+        info = liveViewInfo,
+        focus = state.focus,
+        canFocus = state.status == Status.Connected,
+        onTap = onTapToFocus,
+    )
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Live view", Modifier.weight(1f))
@@ -163,7 +186,25 @@ private fun RemoteScreen(
         ExposureControls(it, enabled = state.status == Status.Connected, onSetExposure, onStepExposure)
     }
 
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FilledTonalButton(
+            onClick = onFocus,
+            enabled = state.status == Status.Connected,
+            shape = CircleShape,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier.size(64.dp),
+        ) {
+            Text(
+                if (state.status == Status.Focusing) "…" else "Focus",
+                maxLines = 1,
+                softWrap = false,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
         Button(
             onClick = onTakePhoto,
             enabled = state.status == Status.Connected,
@@ -179,21 +220,55 @@ private fun RemoteScreen(
                 softWrap = false,
             )
         }
+        // Balances the Focus button so Shoot stays centred.
+        Box(Modifier.size(64.dp))
     }
+    Text(
+        "Tap the picture to focus there. Shoot also focuses first.",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+    )
+}
+
+/** Where an image of [imageSize] is drawn inside [box] with ContentScale.Fit. */
+private fun fitRect(box: Size, imageSize: Size): Rect {
+    if (imageSize.width <= 0f || imageSize.height <= 0f) return Rect(Offset.Zero, box)
+    val scale = minOf(box.width / imageSize.width, box.height / imageSize.height)
+    val w = imageSize.width * scale
+    val h = imageSize.height * scale
+    return Rect(Offset((box.width - w) / 2, (box.height - h) / 2), Size(w, h))
 }
 
 @Composable
-private fun LiveView(frame: ImageBitmap?, on: Boolean, fps: Int) {
+private fun LiveView(
+    frame: ImageBitmap?,
+    on: Boolean,
+    fps: Int,
+    info: LiveViewInfo?,
+    focus: FocusMarker?,
+    canFocus: Boolean,
+    onTap: (Float, Float) -> Unit,
+) {
+    val imageSize = frame?.let { Size(it.width.toFloat(), it.height.toFloat()) } ?: Size.Zero
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(3f / 2f)
             .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black),
+            .background(Color.Black)
+            .pointerInput(imageSize, canFocus) {
+                detectTapGestures { tap ->
+                    if (!canFocus || imageSize == Size.Zero) return@detectTapGestures
+                    val r = fitRect(Size(size.width.toFloat(), size.height.toFloat()), imageSize)
+                    if (r.contains(tap)) onTap((tap.x - r.left) / r.width, (tap.y - r.top) / r.height)
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         if (frame != null && on) {
             Image(frame, contentDescription = "Live view", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            FocusOverlay(imageSize, info, focus)
             Text(
                 "$fps fps",
                 color = Color.White,
@@ -206,6 +281,34 @@ private fun LiveView(frame: ImageBitmap?, on: Boolean, fps: Int) {
             )
         } else {
             Text(if (on) "Starting live view…" else "Live view off", color = Color.White)
+        }
+    }
+}
+
+/**
+ * Draws the camera's focus area (thin white box, from the live view header) and, after a
+ * focus attempt, a marker that turns green when focused or red when the camera couldn't focus.
+ */
+@Composable
+private fun FocusOverlay(imageSize: Size, info: LiveViewInfo?, focus: FocusMarker?) {
+    Canvas(Modifier.fillMaxSize()) {
+        val r = fitRect(size, imageSize)
+        if (info != null && info.afWidth > 0 && info.afHeight > 0) {
+            val w = info.afWidth.toFloat() / info.wholeWidth * r.width
+            val h = info.afHeight.toFloat() / info.wholeHeight * r.height
+            val cx = r.left + info.afCenterX.toFloat() / info.wholeWidth * r.width
+            val cy = r.top + info.afCenterY.toFloat() / info.wholeHeight * r.height
+            drawRect(Color.White.copy(alpha = 0.7f), Offset(cx - w / 2, cy - h / 2), Size(w, h), style = Stroke(2f))
+        }
+        if (focus != null) {
+            val color = when (focus.result) {
+                FocusResult.Focusing -> Color.White
+                FocusResult.Focused -> Color(0xFF4CAF50)
+                FocusResult.Failed -> Color(0xFFF44336)
+            }
+            val side = 36.dp.toPx()
+            val c = Offset(r.left + focus.x * r.width, r.top + focus.y * r.height)
+            drawRect(color, Offset(c.x - side / 2, c.y - side / 2), Size(side, side), style = Stroke(3.dp.toPx()))
         }
     }
 }

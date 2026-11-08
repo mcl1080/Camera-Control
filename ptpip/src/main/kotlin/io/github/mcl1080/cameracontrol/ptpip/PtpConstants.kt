@@ -29,10 +29,12 @@ object OpCode {
     const val SET_DEVICE_PROP_VALUE = 0x1016
 
     const val NIKON_INITIATE_CAPTURE_REC_IN_SDRAM = 0x90C0
+    const val NIKON_AF_DRIVE = 0x90C1
     const val NIKON_DEVICE_READY = 0x90C8
     const val NIKON_START_LIVE_VIEW = 0x9201
     const val NIKON_END_LIVE_VIEW = 0x9202
     const val NIKON_GET_LIVE_VIEW_IMAGE = 0x9203
+    const val NIKON_CHANGE_AF_AREA = 0x9205
     const val NIKON_INITIATE_CAPTURE_REC_IN_MEDIA = 0x9207
 }
 
