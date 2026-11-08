@@ -23,6 +23,8 @@ object OpCode {
     const val GET_DEVICE_INFO = 0x1001
     const val OPEN_SESSION = 0x1002
     const val CLOSE_SESSION = 0x1003
+    const val GET_STORAGE_IDS = 0x1004
+    const val GET_STORAGE_INFO = 0x1005
     const val INITIATE_CAPTURE = 0x100E
     const val GET_DEVICE_PROP_DESC = 0x1014
     const val GET_DEVICE_PROP_VALUE = 0x1015
@@ -71,6 +73,8 @@ object ResponseCode {
 
 /** PTP device property codes used for exposure control. */
 object PropCode {
+    const val BATTERY_LEVEL = 0x5001
+    const val FOCAL_LENGTH = 0x5008
     const val F_NUMBER = 0x5007
     const val EXPOSURE_TIME = 0x500D
     const val EXPOSURE_PROGRAM_MODE = 0x500E

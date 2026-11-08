@@ -40,12 +40,14 @@ class FakeNikonCamera(
             OpCode.GET_DEVICE_PROP_DESC, OpCode.GET_DEVICE_PROP_VALUE, OpCode.SET_DEVICE_PROP_VALUE,
             OpCode.NIKON_START_LIVE_VIEW, OpCode.NIKON_END_LIVE_VIEW, OpCode.NIKON_GET_LIVE_VIEW_IMAGE,
             OpCode.NIKON_AF_DRIVE, OpCode.NIKON_CHANGE_AF_AREA,
+            OpCode.GET_STORAGE_IDS, OpCode.GET_STORAGE_INFO,
         ),
         eventsSupported = setOf(0x4002),
         devicePropertiesSupported = setOf(
             PropCode.DATE_TIME, PropCode.EXPOSURE_PROGRAM_MODE, PropCode.F_NUMBER,
             PropCode.NIKON_EXPOSURE_TIME, PropCode.EXPOSURE_TIME,
             PropCode.EXPOSURE_INDEX, PropCode.EXPOSURE_BIAS_COMPENSATION,
+            PropCode.BATTERY_LEVEL, PropCode.FOCAL_LENGTH,
         ),
         captureFormats = listOf(0x3801),
         imageFormats = listOf(0x3801),
@@ -62,7 +64,12 @@ class FakeNikonCamera(
         PropCode.EXPOSURE_TIME to 40L,
         PropCode.EXPOSURE_INDEX to 400L,
         PropCode.EXPOSURE_BIAS_COMPENSATION to 0L,
+        PropCode.BATTERY_LEVEL to 76L,
+        PropCode.FOCAL_LENGTH to 5000L,
     )
+
+    /** Slot 1 has a card; slot 2 is empty (low 16 bits zero). */
+    val card1 = StorageInfo(0x00010001, "Slot 1", "NIKON Z 5", 64_000_000_000L, 40_000_000_000L, 1234L)
 
     private val propTypes = mapOf(
         PropCode.EXPOSURE_PROGRAM_MODE to DataType.UINT16,
@@ -71,6 +78,8 @@ class FakeNikonCamera(
         PropCode.EXPOSURE_TIME to DataType.UINT32,
         PropCode.EXPOSURE_INDEX to DataType.UINT16,
         PropCode.EXPOSURE_BIAS_COMPENSATION to DataType.INT16,
+        PropCode.BATTERY_LEVEL to DataType.UINT8,
+        PropCode.FOCAL_LENGTH to DataType.UINT32,
     )
 
     private val propChoices = mapOf(
@@ -173,6 +182,18 @@ class FakeNikonCamera(
                 lastCaptureParams = params
                 busyRemaining = busyPollsAfterCapture
                 respond(ResponseCode.OK)
+            }
+            OpCode.GET_STORAGE_IDS -> {
+                sendData(out, tid, PtpDataWriter().u32(2).u32(card1.storageId).u32(0x00020000).toByteArray())
+                respond(ResponseCode.OK)
+            }
+            OpCode.GET_STORAGE_INFO -> {
+                if (params[0] == card1.storageId) {
+                    sendData(out, tid, card1.toBytes())
+                    respond(ResponseCode.OK)
+                } else {
+                    respond(ResponseCode.STORE_NOT_AVAILABLE)
+                }
             }
             OpCode.NIKON_AF_DRIVE -> {
                 busyRemaining = 1

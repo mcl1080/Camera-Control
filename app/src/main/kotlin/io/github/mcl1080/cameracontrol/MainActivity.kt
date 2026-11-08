@@ -3,6 +3,7 @@ package io.github.mcl1080.cameracontrol
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -11,14 +12,18 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -70,6 +75,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
+import io.github.mcl1080.cameracontrol.ptpip.StorageInfo
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
 import io.github.mcl1080.cameracontrol.ptpip.LiveViewInfo
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
@@ -96,24 +102,36 @@ class MainActivity : ComponentActivity() {
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        if (state.status == Status.Disconnected || state.status == Status.Connecting) {
-                            ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
-                        } else {
-                            RemoteScreen(
-                                state = state,
-                                frame = frame,
-                                fps = fps,
-                                liveViewInfo = liveViewInfo,
-                                onTapToFocus = viewModel::tapToFocus,
-                                onFocus = viewModel::focus,
-                                onLiveViewChange = viewModel::setLiveView,
-                                onTakePhoto = viewModel::takePhoto,
-                                onSetExposure = viewModel::setExposure,
-                                onStepExposure = viewModel::stepExposure,
-                                onDisconnect = viewModel::disconnect,
-                            )
+                        val connected = state.status != Status.Disconnected && state.status != Status.Connecting
+                        BackHandler(enabled = connected && state.screen == Screen.Remote) { viewModel.goHome() }
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (!connected) {
+                                ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
+                            } else if (state.screen == Screen.Home) {
+                                HomeScreen(state, onOpenRemote = viewModel::openRemote, onDisconnect = viewModel::disconnect)
+                            } else {
+                                RemoteScreen(
+                                    state = state,
+                                    frame = frame,
+                                    fps = fps,
+                                    liveViewInfo = liveViewInfo,
+                                    onTapToFocus = viewModel::tapToFocus,
+                                    onFocus = viewModel::focus,
+                                    onLiveViewChange = viewModel::setLiveView,
+                                    onTakePhoto = viewModel::takePhoto,
+                                    onSetExposure = viewModel::setExposure,
+                                    onStepExposure = viewModel::stepExposure,
+                                    onAfOnShootChange = viewModel::setAfOnShoot,
+                                    onBack = viewModel::goHome,
+                                )
+                            }
                         }
-                        LogPanel(state.log, Modifier.weight(1f))
+                        LogPanel(state.log)
                     }
                 }
             }
@@ -143,6 +161,75 @@ private fun ConnectScreen(state: UiState, onIpChange: (String) -> Unit, onConnec
     }
 }
 
+/** The landing page once connected: what the camera is and how it's doing, and the way to the remote. */
+@Composable
+private fun HomeScreen(state: UiState, onOpenRemote: () -> Unit, onDisconnect: () -> Unit) {
+    val info = state.deviceInfo
+    val status = state.cameraStatus
+    val exposure = state.exposure
+
+    Text(state.cameraModel ?: "Camera", style = MaterialTheme.typography.headlineSmall)
+    Text("Connected over Wi-Fi", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+
+    InfoCard("Camera") {
+        InfoRow("Model", info?.model ?: "–")
+        InfoRow("Firmware", info?.deviceVersion?.ifBlank { null } ?: "–")
+        InfoRow("Serial number", info?.serialNumber?.trim()?.ifBlank { null } ?: "–")
+    }
+
+    InfoCard("Status") {
+        InfoRow("Battery", status?.batteryPercent?.let { "$it%" } ?: "–")
+        InfoRow("Mode", exposure?.mode?.label ?: "–")
+        InfoRow("Lens", status?.focalLengthMm?.let { "%.0f mm".format(it) } ?: "–")
+        if (exposure != null) {
+            val parts = listOf(ExposureSetting.SHUTTER_SPEED, ExposureSetting.APERTURE, ExposureSetting.ISO)
+                .mapNotNull { exposure.settings[it]?.label }
+            InfoRow("Exposure", parts.joinToString("  ·  ").ifBlank { "–" })
+        }
+    }
+
+    InfoCard("Memory cards") {
+        val cards = status?.cards
+        when {
+            cards == null -> InfoRow("Reading…", "")
+            cards.isEmpty() -> InfoRow("No card", "")
+            else -> cards.forEach { InfoRow("Slot ${it.slot}", cardSummary(it)) }
+        }
+    }
+
+    Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+        Text("Remote & live view", style = MaterialTheme.typography.titleMedium)
+    }
+    FilledTonalButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+        Text("Time & location sync (coming next)")
+    }
+    TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+}
+
+private fun cardSummary(card: StorageInfo): String {
+    val gb = 1_000_000_000.0
+    val space = "%.1f of %.0f GB free".format(card.freeBytes / gb, card.maxCapacityBytes / gb)
+    return card.freeImages?.let { "%,d shots left · %s".format(it, space) } ?: space
+}
+
+@Composable
+private fun InfoCard(title: String, content: @Composable () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, textAlign = TextAlign.End)
+    }
+}
+
 @Composable
 private fun RemoteScreen(
     state: UiState,
@@ -155,16 +242,17 @@ private fun RemoteScreen(
     onTakePhoto: () -> Unit,
     onSetExposure: (SettingState, Long) -> Unit,
     onStepExposure: (ExposureSetting, Int) -> Unit,
-    onDisconnect: () -> Unit,
+    onAfOnShootChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(state.cameraModel ?: "Camera", style = MaterialTheme.typography.titleMedium)
-            state.exposure?.let {
-                Text("Mode ${it.mode.label}", style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-        TextButton(onClick = onDisconnect) { Text("Disconnect") }
+        TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("‹ Camera") }
+        Text(
+            "Remote" + (state.exposure?.let { " · Mode ${it.mode.label}" } ?: ""),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End,
+        )
     }
 
     LiveView(
@@ -180,6 +268,10 @@ private fun RemoteScreen(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Live view", Modifier.weight(1f))
         Switch(checked = state.liveViewOn, onCheckedChange = onLiveViewChange)
+        Spacer(Modifier.size(16.dp))
+        Text("Autofocus on shoot", Modifier.weight(1f), textAlign = TextAlign.End)
+        Spacer(Modifier.size(8.dp))
+        Switch(checked = state.afOnShoot, onCheckedChange = onAfOnShootChange)
     }
 
     state.exposure?.let {
@@ -224,7 +316,11 @@ private fun RemoteScreen(
         Box(Modifier.size(64.dp))
     }
     Text(
-        "Tap the picture to focus there. Shoot also focuses first.",
+        if (state.afOnShoot) {
+            "Tap the picture to focus there. Shoot focuses first."
+        } else {
+            "Tap the picture to focus there. Shoot keeps the current focus."
+        },
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.fillMaxWidth(),
         textAlign = TextAlign.Center,
@@ -453,7 +549,7 @@ private fun LogPanel(log: List<String>, modifier: Modifier = Modifier) {
             TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide" else "Show") }
         }
         if (expanded) {
-            Card(Modifier.fillMaxWidth().weight(1f)) {
+            Card(Modifier.fillMaxWidth().height(200.dp)) {
                 val listState = rememberLazyListState()
                 LaunchedEffect(log.size) {
                     if (log.isNotEmpty()) listState.animateScrollToItem(log.lastIndex)
