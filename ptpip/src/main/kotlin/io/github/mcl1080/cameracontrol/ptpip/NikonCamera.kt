@@ -102,6 +102,38 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         throw PtpIpException("Camera stayed busy for more than ${timeoutMs / 1000} s")
     }
 
+    // ---- Camera status ----
+
+    /** Battery, lens focal length and memory cards. Anything the camera won't report is left null or out. */
+    fun readStatus(): CameraStatus {
+        val supported = deviceInfo.devicePropertiesSupported
+        val battery = if (PropCode.BATTERY_LEVEL in supported) {
+            runCatching { getPropValue(PropCode.BATTERY_LEVEL, DataType.UINT8).toInt() }.getOrNull()
+        } else {
+            null
+        }
+        val focal = if (PropCode.FOCAL_LENGTH in supported) {
+            runCatching { getPropValue(PropCode.FOCAL_LENGTH, DataType.UINT32) / 100.0 }.getOrNull()
+        } else {
+            null
+        }
+        return CameraStatus(battery, focal?.takeIf { it > 0 }, readCards())
+    }
+
+    private fun readCards(): List<StorageInfo> {
+        val ids = connection.transaction(OpCode.GET_STORAGE_IDS)
+        if (!ids.isOk || ids.data == null) return emptyList()
+        val r = PtpDataReader(ids.data)
+        val storageIds = List(r.u32()) { r.u32() }
+        return storageIds
+            // A storage ID with zero low bits is an empty slot.
+            .filter { it and 0xFFFF != 0 }
+            .mapNotNull { id ->
+                val resp = connection.transaction(OpCode.GET_STORAGE_INFO, intArrayOf(id))
+                if (resp.isOk && resp.data != null) StorageInfo.parse(id, resp.data) else null
+            }
+    }
+
     // ---- Exposure settings ----
 
     fun getPropDesc(code: Int): DevicePropDesc {

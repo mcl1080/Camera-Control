@@ -7,6 +7,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.mcl1080.cameracontrol.ptpip.CameraStatus
+import io.github.mcl1080.cameracontrol.ptpip.DeviceInfo
 import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
 import io.github.mcl1080.cameracontrol.ptpip.LiveViewFrame
@@ -36,6 +38,9 @@ import javax.net.SocketFactory
 
 enum class Status { Disconnected, Connecting, Connected, Focusing, Busy }
 
+/** Screens once connected: the landing page with camera info, and the remote with live view. */
+enum class Screen { Home, Remote }
+
 enum class FocusResult { Focusing, Focused, Failed }
 
 /** Where focus was asked for, as fractions (0..1) of the live view picture, and how it went. */
@@ -45,7 +50,12 @@ data class UiState(
     val status: Status = Status.Disconnected,
     val cameraIp: String = DEFAULT_CAMERA_IP,
     val cameraModel: String? = null,
+    val deviceInfo: DeviceInfo? = null,
+    val cameraStatus: CameraStatus? = null,
+    val screen: Screen = Screen.Home,
     val liveViewOn: Boolean = true,
+    /** Whether Shoot focuses first. Off lets you keep a focus you set, or shoot in manual focus. */
+    val afOnShoot: Boolean = true,
     val exposure: ExposureState? = null,
     val focus: FocusMarker? = null,
     val log: List<String> = emptyList(),
@@ -70,8 +80,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private val _fps = MutableStateFlow(0)
     val fps: StateFlow<Int> = _fps.asStateFlow()
 
+    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    init {
+        _state.update { it.copy(afOnShoot = prefs.getBoolean(PREF_AF_ON_SHOOT, true)) }
+    }
+
     @Volatile
     private var camera: NikonCamera? = null
+
+    /** Set when battery and card info should be re-read (after connecting or taking a photo). */
+    @Volatile
+    private var statusDirty = true
     private var pollJob: Job? = null
 
     /** Set when the settings must be re-read in full (after a change from the app or the camera). */
@@ -105,7 +125,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.IO) { cam.open() }
                 camera = cam
                 _state.update {
-                    it.copy(status = Status.Connected, cameraModel = "${cam.deviceInfo.manufacturer} ${cam.deviceInfo.model}")
+                    it.copy(
+                        status = Status.Connected,
+                        screen = Screen.Home,
+                        cameraModel = "${cam.deviceInfo.manufacturer} ${cam.deviceInfo.model}",
+                        deviceInfo = cam.deviceInfo,
+                    )
                 }
                 startPolling(cam)
             } catch (e: Exception) {
@@ -118,16 +143,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLiveView(on: Boolean) = _state.update { it.copy(liveViewOn = on) }
 
+    fun openRemote() = _state.update { it.copy(screen = Screen.Remote) }
+
+    fun goHome() = _state.update { it.copy(screen = Screen.Home, focus = null) }
+
+    fun setAfOnShoot(on: Boolean) {
+        prefs.edit().putBoolean(PREF_AF_ON_SHOOT, on).apply()
+        _state.update { it.copy(afOnShoot = on) }
+    }
+
     fun takePhoto() {
         val cam = camera ?: return
         if (_state.value.status != Status.Connected) return
+        val autofocus = _state.value.afOnShoot
         _state.update { it.copy(status = Status.Busy) }
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { cam.capture() }
+                withContext(Dispatchers.IO) { cam.capture(autofocus) }
             } catch (e: Exception) {
                 log("Photo failed: ${e.message}")
             }
+            statusDirty = true
             if (cam.isConnected) _state.update { it.copy(status = Status.Connected) } else connectionLost()
         }
     }
@@ -210,7 +246,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         _frame.value = null
         _fps.value = 0
         _liveViewInfo.value = null
-        _state.update { it.copy(status = Status.Disconnected, cameraModel = null, exposure = null, focus = null) }
+        _state.update {
+            it.copy(
+                status = Status.Disconnected,
+                screen = Screen.Home,
+                cameraModel = null,
+                deviceInfo = null,
+                cameraStatus = null,
+                exposure = null,
+                focus = null,
+            )
+        }
         if (cam != null) {
             viewModelScope.launch(Dispatchers.IO) { runCatching { cam.close() } }
             log("Disconnected")
@@ -226,6 +272,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private fun startPolling(cam: NikonCamera) {
         pollJob?.cancel()
         exposureDirty = true
+        statusDirty = true
         pollJob = viewModelScope.launch(Dispatchers.IO) {
             val frames = Channel<LiveViewFrame>(Channel.CONFLATED)
             launch(Dispatchers.Default) { decodeFrames(frames) }
@@ -233,9 +280,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             var liveViewRunning = false
             var lastCheck = 0L
             var watchIndex = 0
+            var lastStatus = 0L
             while (isActive && camera === cam) {
                 try {
-                    val wantLiveView = _state.value.liveViewOn
+                    // Live view only runs on the remote screen, which saves the camera's battery.
+                    val wantLiveView = _state.value.liveViewOn && _state.value.screen == Screen.Remote
                     if (wantLiveView && !liveViewRunning) {
                         try {
                             cam.startLiveView()
@@ -268,6 +317,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     val now = System.currentTimeMillis()
+                    if (idle && (statusDirty || now - lastStatus >= STATUS_INTERVAL_MS)) {
+                        statusDirty = false
+                        lastStatus = now
+                        val status = cam.readStatus()
+                        _state.update { it.copy(cameraStatus = status) }
+                    }
                     if (idle && settingsSettled && now - lastCheck >= WATCH_INTERVAL_MS) {
                         lastCheck = now
                         val watch = _state.value.exposure?.watchList().orEmpty()
@@ -332,12 +387,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         /** One setting is checked this often, so each is checked about every 1.25 s. */
         private const val WATCH_INTERVAL_MS = 250L
 
+        /** Battery and cards change slowly, so they're re-read every 15 s. */
+        private const val STATUS_INTERVAL_MS = 15_000L
+
+        private const val PREFS = "camera_control"
+        private const val PREF_AF_ON_SHOOT = "af_on_shoot"
+
         /**
          * Nikon cameras remember the phones they have accepted by this ID, so it must stay
          * the same between launches or the camera asks to approve the phone every time.
          */
         private fun phoneGuid(context: Context): UUID {
-            val prefs = context.getSharedPreferences("camera_control", Context.MODE_PRIVATE)
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val saved = prefs.getString("ptpip_guid", null)
             if (saved != null) return UUID.fromString(saved)
             return UUID.randomUUID().also { prefs.edit().putString("ptpip_guid", it.toString()).apply() }

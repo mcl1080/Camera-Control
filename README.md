@@ -10,7 +10,10 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
   speed, aperture, ISO and exposure compensation. Only the settings the current mode lets you
   set are editable (for example, in A mode shutter speed is shown but set by the camera).
   Settings changed on the camera's dials show up in the app within about a second.
-  Tap the live view to focus there, or use the Focus button; Shoot focuses first.
+  Tap the live view to focus there, or use the Focus button. "Autofocus on shoot" can be
+  switched off to keep a focus you set or to shoot in manual focus.
+- After connecting, a landing page shows the camera's model, firmware, battery, mode, lens
+  focal length and memory cards (shots left, free space), with the remote on its own screen.
 - **Step 3 (next):** clock and GPS sync.
 
 ## Project layout
