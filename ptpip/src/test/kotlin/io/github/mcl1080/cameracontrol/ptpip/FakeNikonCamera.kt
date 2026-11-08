@@ -37,7 +37,7 @@ class FakeNikonCamera(
             OpCode.GET_DEVICE_INFO, OpCode.OPEN_SESSION, OpCode.CLOSE_SESSION,
             OpCode.INITIATE_CAPTURE, OpCode.NIKON_DEVICE_READY,
             OpCode.NIKON_INITIATE_CAPTURE_REC_IN_MEDIA,
-            OpCode.GET_DEVICE_PROP_DESC, OpCode.SET_DEVICE_PROP_VALUE,
+            OpCode.GET_DEVICE_PROP_DESC, OpCode.GET_DEVICE_PROP_VALUE, OpCode.SET_DEVICE_PROP_VALUE,
             OpCode.NIKON_START_LIVE_VIEW, OpCode.NIKON_END_LIVE_VIEW, OpCode.NIKON_GET_LIVE_VIEW_IMAGE,
         ),
         eventsSupported = setOf(0x4002),
@@ -188,6 +188,13 @@ class FakeNikonCamera(
                     sendData(out, tid, w.toByteArray())
                     respond(ResponseCode.OK)
                 }
+            }
+            OpCode.GET_DEVICE_PROP_VALUE -> {
+                val code = r.u32()
+                val type = propTypes.getValue(code)
+                val current = if (code == PropCode.EXPOSURE_PROGRAM_MODE) mode else props.getValue(code)
+                sendData(out, tid, DevicePropDesc.encodeValue(type, current))
+                respond(ResponseCode.OK)
             }
             OpCode.SET_DEVICE_PROP_VALUE -> {
                 val code = r.u32()

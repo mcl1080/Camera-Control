@@ -76,6 +76,13 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         return DevicePropDesc.parse(resp.data)
     }
 
+    /** Reads just a property's current value: much cheaper than [getPropDesc]. */
+    fun getPropValue(code: Int, dataType: Int): Long {
+        val resp = connection.transaction(OpCode.GET_DEVICE_PROP_VALUE, intArrayOf(code))
+        if (!resp.isOk || resp.data == null) throw PtpResponseException(resp.code, OpCode.GET_DEVICE_PROP_VALUE)
+        return DevicePropDesc.readValue(PtpDataReader(resp.data), dataType)
+    }
+
     fun setProp(code: Int, dataType: Int, value: Long) {
         val resp = connection.transaction(
             OpCode.SET_DEVICE_PROP_VALUE,
@@ -88,11 +95,12 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
     /** Reads the shooting mode and every exposure setting the camera supports. */
     fun readExposure(): ExposureState {
         val supported = deviceInfo.devicePropertiesSupported
-        val modeValue = if (PropCode.EXPOSURE_PROGRAM_MODE in supported) {
-            getPropDesc(PropCode.EXPOSURE_PROGRAM_MODE).currentValue
+        val modeDesc = if (PropCode.EXPOSURE_PROGRAM_MODE in supported) {
+            getPropDesc(PropCode.EXPOSURE_PROGRAM_MODE)
         } else {
-            -1L
+            null
         }
+        val modeValue = modeDesc?.currentValue ?: -1L
         val mode = ShootingMode.fromPtp(modeValue)
 
         val settings = mutableMapOf<ExposureSetting, SettingState>()
@@ -122,7 +130,7 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         if (PropCode.EXPOSURE_BIAS_COMPENSATION in supported) {
             add(ExposureSetting.EXPOSURE_COMPENSATION, getPropDesc(PropCode.EXPOSURE_BIAS_COMPENSATION))
         }
-        return ExposureState(mode, modeValue, settings)
+        return ExposureState(mode, modeValue, modeDesc?.dataType ?: DataType.UINT16, settings)
     }
 
     fun setExposure(setting: SettingState, value: Long) {

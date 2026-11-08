@@ -15,11 +15,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -28,10 +31,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -53,6 +58,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,6 +79,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     val state by viewModel.state.collectAsStateWithLifecycle()
                     val frame by viewModel.frame.collectAsStateWithLifecycle()
+                    val fps by viewModel.fps.collectAsStateWithLifecycle()
                     Column(
                         Modifier
                             .fillMaxSize()
@@ -86,9 +93,11 @@ class MainActivity : ComponentActivity() {
                             RemoteScreen(
                                 state = state,
                                 frame = frame,
+                                fps = fps,
                                 onLiveViewChange = viewModel::setLiveView,
                                 onTakePhoto = viewModel::takePhoto,
                                 onSetExposure = viewModel::setExposure,
+                                onStepExposure = viewModel::stepExposure,
                                 onDisconnect = viewModel::disconnect,
                             )
                         }
@@ -126,9 +135,11 @@ private fun ConnectScreen(state: UiState, onIpChange: (String) -> Unit, onConnec
 private fun RemoteScreen(
     state: UiState,
     frame: ImageBitmap?,
+    fps: Int,
     onLiveViewChange: (Boolean) -> Unit,
     onTakePhoto: () -> Unit,
     onSetExposure: (SettingState, Long) -> Unit,
+    onStepExposure: (ExposureSetting, Int) -> Unit,
     onDisconnect: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -141,14 +152,16 @@ private fun RemoteScreen(
         TextButton(onClick = onDisconnect) { Text("Disconnect") }
     }
 
-    LiveView(frame, state.liveViewOn)
+    LiveView(frame, state.liveViewOn, fps)
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Live view", Modifier.weight(1f))
         Switch(checked = state.liveViewOn, onCheckedChange = onLiveViewChange)
     }
 
-    state.exposure?.let { ExposureControls(it, enabled = state.status == Status.Connected, onSetExposure) }
+    state.exposure?.let {
+        ExposureControls(it, enabled = state.status == Status.Connected, onSetExposure, onStepExposure)
+    }
 
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Button(
@@ -156,15 +169,21 @@ private fun RemoteScreen(
             enabled = state.status == Status.Connected,
             shape = CircleShape,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+            contentPadding = PaddingValues(0.dp),
             modifier = Modifier.size(84.dp),
         ) {
-            Text(if (state.status == Status.Busy) "…" else "Shoot", fontWeight = FontWeight.Bold)
+            Text(
+                if (state.status == Status.Busy) "…" else "Shoot",
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
 
 @Composable
-private fun LiveView(frame: ImageBitmap?, on: Boolean) {
+private fun LiveView(frame: ImageBitmap?, on: Boolean, fps: Int) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -175,6 +194,16 @@ private fun LiveView(frame: ImageBitmap?, on: Boolean) {
     ) {
         if (frame != null && on) {
             Image(frame, contentDescription = "Live view", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            Text(
+                "$fps fps",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .background(Color(0x80000000), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
         } else {
             Text(if (on) "Starting live view…" else "Live view off", color = Color.White)
         }
@@ -188,58 +217,127 @@ private val settingOrder = listOf(
     ExposureSetting.EXPOSURE_COMPENSATION to "Exp. comp.",
 )
 
+/**
+ * A row of the four settings. Tap one to select it, then turn it like a command dial:
+ * the ‹ › buttons step one value at a time, and the strip below shows the neighbouring
+ * values so you can tap one directly.
+ */
 @Composable
-private fun ExposureControls(exposure: ExposureState, enabled: Boolean, onSet: (SettingState, Long) -> Unit) {
+private fun ExposureControls(
+    exposure: ExposureState,
+    enabled: Boolean,
+    onSet: (SettingState, Long) -> Unit,
+    onStep: (ExposureSetting, Int) -> Unit,
+) {
+    var selected by remember { mutableStateOf<ExposureSetting?>(null) }
+
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         for ((setting, title) in settingOrder) {
             val state = exposure.settings[setting] ?: continue
-            SettingControl(title, state, enabled, onSet, Modifier.weight(1f))
+            SettingCard(
+                title = title,
+                state = state,
+                selected = selected == setting,
+                onClick = { selected = if (selected == setting) null else setting },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
+    val current = selected?.let { exposure.settings[it] }
+    if (current != null) {
+        if (current.editable && current.choices.isNotEmpty()) {
+            SettingDial(current, enabled, onSet, onStep)
+        } else {
+            Text(
+                "Set by the camera in ${exposure.mode.label} mode",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
 
 @Composable
-private fun SettingControl(
+private fun SettingCard(
     title: String,
+    state: SettingState,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedCard(
+        onClick = onClick,
+        modifier = modifier,
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else CardDefaults.outlinedCardBorder(),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(title, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            Text(
+                if (state.setting == ExposureSetting.ISO) state.label.removePrefix("ISO ") else state.label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = if (state.editable) FontWeight.Bold else FontWeight.Normal,
+                color = if (state.editable) Color.Unspecified else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
+            )
+            Text(if (state.editable) " " else "auto", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun SettingDial(
     state: SettingState,
     enabled: Boolean,
     onSet: (SettingState, Long) -> Unit,
-    modifier: Modifier = Modifier,
+    onStep: (ExposureSetting, Int) -> Unit,
 ) {
-    var open by remember { mutableStateOf(false) }
-    val canEdit = enabled && state.editable && state.choices.isNotEmpty()
-    Box(modifier) {
-        OutlinedCard(
-            onClick = { open = true },
-            enabled = canEdit,
-            modifier = Modifier.fillMaxWidth(),
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        FilledTonalButton(
+            onClick = { onStep(state.setting, -1) },
+            enabled = enabled && state.index > 0,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier.size(44.dp),
+        ) { Text("‹", style = MaterialTheme.typography.titleLarge) }
+
+        val listState = rememberLazyListState()
+        val index = state.index
+        // Keep the current value in the middle of the strip as it changes.
+        LaunchedEffect(state.setting, index) {
+            if (index >= 0) {
+                val visible = listState.layoutInfo.visibleItemsInfo.size.coerceAtLeast(3)
+                listState.animateScrollToItem((index - visible / 2).coerceAtLeast(0))
+            }
+        }
+        LazyRow(
+            state = listState,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp),
+            modifier = Modifier.weight(1f),
         ) {
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                Text(title, style = MaterialTheme.typography.labelSmall)
-                Text(
-                    if (state.setting == ExposureSetting.ISO) state.label.removePrefix("ISO ") else state.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (state.editable) FontWeight.Bold else FontWeight.Normal,
-                )
-                if (!state.editable) Text("auto", style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (value in state.choices) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            state.labelFor(value),
-                            fontWeight = if (value == state.value) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    },
-                    onClick = {
-                        open = false
-                        if (value != state.value) onSet(state, value)
-                    },
+            itemsIndexed(state.choices) { i, value ->
+                FilterChip(
+                    selected = i == index,
+                    onClick = { if (i != index) onSet(state, value) },
+                    enabled = enabled,
+                    label = { Text(state.labelFor(value), maxLines = 1, softWrap = false) },
                 )
             }
         }
+
+        FilledTonalButton(
+            onClick = { onStep(state.setting, 1) },
+            enabled = enabled && index < state.choices.lastIndex,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier.size(44.dp),
+        ) { Text("›", style = MaterialTheme.typography.titleLarge) }
     }
 }
 
