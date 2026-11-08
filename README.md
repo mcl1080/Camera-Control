@@ -56,6 +56,11 @@ If it fails, the log on screen shows each step and the camera's error code.
 3. Leave **Send location** on. A notification shows the link status while it runs. On the
    camera, check **Setup menu > Location data** shows that the phone's location is being used.
 
+Once it's on, there's nothing to do in the app: it keeps running in the background (with a
+notification) and starts sending the clock and location whenever the camera turns on. GPS only
+runs while the camera is connected, to save battery. To have it start again by itself after the
+phone restarts, tap **Allow all the time** in the Location card and choose that option for location.
+
 ## License
 
 Camera Control is free software under the GNU General Public License v3.0 (see `LICENSE`).

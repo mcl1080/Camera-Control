@@ -128,12 +128,18 @@ class LocationSyncService : Service() {
     private fun startSync() {
         running = true
         LocationSync.update { it.copy(running = true) }
-        startLocationUpdates()
+        // GPS only runs while the camera is connected; while it's off the service just
+        // listens for it over Bluetooth, which costs far less battery.
         scheduler = Executors.newSingleThreadScheduledExecutor()
         schedule(0)
     }
 
+    @Volatile
+    private var gpsOn = false
+
     private fun startLocationUpdates() {
+        if (gpsOn) return
+        gpsOn = true
         val lm = getSystemService(LocationManager::class.java)
         val intervalMs = LocationSync.intervalSeconds(this) * 1000L
         for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
@@ -145,6 +151,12 @@ class LocationSyncService : Service() {
                 lm.getLastKnownLocation(provider)?.let { locationListener.onLocationChanged(it) }
             }
         }
+    }
+
+    private fun stopLocationUpdates() {
+        if (!gpsOn) return
+        gpsOn = false
+        runCatching { getSystemService(LocationManager::class.java).removeUpdates(locationListener) }
     }
 
     private fun schedule(delaySeconds: Long) {
@@ -168,6 +180,7 @@ class LocationSyncService : Service() {
                 backoffSeconds = BACKOFF_START_SECONDS
                 LocationSync.update { it.copy(connected = true) }
                 sendTime(c)
+                startLocationUpdates()
                 status("Connected to camera")
             }
 
@@ -195,7 +208,9 @@ class LocationSyncService : Service() {
             runCatching { client?.close() }
             client = null
             LocationSync.update { it.copy(connected = false) }
-            status("Lost the camera: ${e.message}")
+            stopLocationUpdates()
+            Log.w(TAG, "Camera link lost", e)
+            status("Camera disconnected; waiting for it to come back")
             next = nextBackoff()
         } finally {
             schedule(next)
@@ -210,7 +225,7 @@ class LocationSyncService : Service() {
             if (!running) return null
             val camera = scanForCamera(SCAN_TIMEOUT_MS)
             if (camera == null) {
-                status("Camera not found; is it on with Bluetooth enabled?")
+                status("Waiting for the camera to turn on")
                 return null
             }
             val candidate = NikonBleClient(applicationContext, camera)
@@ -258,7 +273,9 @@ class LocationSyncService : Service() {
             add(ScanFilter.Builder().setServiceUuid(ParcelUuid(NikonBleClient.SERVICE_UUID)).build())
             add(ScanFilter.Builder().setManufacturerData(NIKON_COMPANY_ID, byteArrayOf()).build())
         }
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        // Scan hard right after a disconnect, then gently while the camera stays off.
+        val mode = if (backoffSeconds <= BACKOFF_START_SECONDS) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED
+        val settings = ScanSettings.Builder().setScanMode(mode).build()
         return try {
             scanner.startScan(filters, settings, callback)
             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
@@ -345,7 +362,7 @@ class LocationSyncService : Service() {
         private const val TAG = "LocationSync"
         private const val SCAN_TIMEOUT_MS = 12_000L
         private const val BACKOFF_START_SECONDS = 5L
-        private const val BACKOFF_MAX_SECONDS = 60L
+        private const val BACKOFF_MAX_SECONDS = 30L
         private const val MAX_ACCURACY_M = 50f
         private const val FIX_MAX_AGE_MS = 60_000L
         private const val GPS_UPDATE_MS = 1_000L
