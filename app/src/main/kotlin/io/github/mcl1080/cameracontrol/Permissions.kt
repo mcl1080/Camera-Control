@@ -27,3 +27,14 @@ fun hasLocationSyncPermissions(context: Context): Boolean =
     locationSyncPermissions()
         .filter { it != Manifest.permission.POST_NOTIFICATIONS && it != Manifest.permission.ACCESS_COARSE_LOCATION }
         .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+
+/** Android 10 and later keep "Allow all the time" location as a separate permission. */
+const val BACKGROUND_LOCATION = Manifest.permission.ACCESS_BACKGROUND_LOCATION
+
+/**
+ * Whether location sync may start with no screen open (after a reboot, or when Android
+ * restarts the service). That needs location set to "Allow all the time".
+ */
+fun canStartLocationSyncInBackground(context: Context): Boolean =
+    hasLocationSyncPermissions(context) &&
+        ContextCompat.checkSelfPermission(context, BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED

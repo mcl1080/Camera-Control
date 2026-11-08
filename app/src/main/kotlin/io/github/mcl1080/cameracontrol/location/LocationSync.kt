@@ -25,6 +25,8 @@ data class LocationSyncStatus(
     val lastAccuracyMeters: Float? = null,
     /** What happened to the last Bluetooth clock write (accepted, rejected, or not offered). */
     val timeWriteResult: String? = null,
+    /** Location is set to "Allow all the time", so sync can restart on its own after a reboot. */
+    val backgroundAllowed: Boolean = false,
     val intervalSeconds: Int = LocationSync.DEFAULT_INTERVAL_SECONDS,
 )
 
@@ -107,6 +109,11 @@ object LocationSync {
     /** Starts sending location in the background. The caller must already hold the permissions. */
     fun start(context: Context) {
         prefs(context).edit().putBoolean(PREF_ENABLED, true).apply()
+        startService(context)
+    }
+
+    /** Starts the service without changing the saved on/off setting. */
+    fun startService(context: Context) {
         ContextCompat.startForegroundService(context, Intent(context, LocationSyncService::class.java))
     }
 

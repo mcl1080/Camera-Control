@@ -80,6 +80,7 @@ import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
 import io.github.mcl1080.cameracontrol.location.LocationSync
 import io.github.mcl1080.cameracontrol.location.LocationSyncStatus
 import io.github.mcl1080.cameracontrol.ptpip.StorageInfo
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import java.text.DateFormat
 import java.util.Date
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
@@ -115,6 +116,18 @@ class MainActivity : ComponentActivity() {
                         }
                         pendingLocationAction = null
                     }
+                    // "Allow all the time" location lets sync restart by itself after a reboot.
+                    fun refreshBackgroundAllowed() {
+                        val allowed = canStartLocationSyncInBackground(this@MainActivity)
+                        LocationSync.update { s -> s.copy(backgroundAllowed = allowed) }
+                    }
+                    LifecycleResumeEffect(Unit) {
+                        refreshBackgroundAllowed()
+                        onPauseOrDispose { }
+                    }
+                    val backgroundLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestPermission(),
+                    ) { refreshBackgroundAllowed() }
                     fun withLocationPermissions(action: () -> Unit) {
                         if (hasLocationSyncPermissions(this@MainActivity)) {
                             action()
@@ -128,6 +141,9 @@ class MainActivity : ComponentActivity() {
                         onEnable = { on -> if (on) withLocationPermissions { viewModel.setLocationSync(true) } else viewModel.setLocationSync(false) },
                         onInterval = viewModel::setLocationInterval,
                         onForget = viewModel::forgetLocationPairing,
+                        onAllowBackground = {
+                            withLocationPermissions { backgroundLauncher.launch(BACKGROUND_LOCATION) }
+                        },
                     )
                     Column(
                         Modifier
@@ -270,6 +286,7 @@ class LocationActions(
     val onEnable: (Boolean) -> Unit,
     val onInterval: (Int) -> Unit,
     val onForget: () -> Unit,
+    val onAllowBackground: () -> Unit,
 )
 
 /**
@@ -316,6 +333,21 @@ private fun LocationCard(status: LocationSyncStatus, actions: LocationActions) {
                         label = { Text(if (s < 60) "$s s" else "${s / 60} min") },
                     )
                 }
+            }
+            if (status.backgroundAllowed) {
+                Text(
+                    "Keeps running in the background and starts sending as soon as the camera " +
+                        "turns on, including after the phone restarts.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                Text(
+                    "Keeps running in the background while Send location is on. To have it start " +
+                        "again by itself after the phone restarts, set this app's location " +
+                        "permission to \"Allow all the time\".",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = actions.onAllowBackground) { Text("Allow all the time") }
             }
             Row {
                 TextButton(onClick = actions.onPair, enabled = !status.pairing) { Text("Pair again") }
