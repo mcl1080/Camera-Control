@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -75,7 +77,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mcl1080.cameracontrol.ptpip.ExposureSetting
+import io.github.mcl1080.cameracontrol.location.LocationSync
+import io.github.mcl1080.cameracontrol.location.LocationSyncStatus
 import io.github.mcl1080.cameracontrol.ptpip.StorageInfo
+import java.text.DateFormat
+import java.util.Date
 import io.github.mcl1080.cameracontrol.ptpip.ExposureState
 import io.github.mcl1080.cameracontrol.ptpip.LiveViewInfo
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
@@ -95,6 +101,34 @@ class MainActivity : ComponentActivity() {
                     val frame by viewModel.frame.collectAsStateWithLifecycle()
                     val fps by viewModel.fps.collectAsStateWithLifecycle()
                     val liveViewInfo by viewModel.liveViewInfo.collectAsStateWithLifecycle()
+                    val locationSync by viewModel.locationSync.collectAsStateWithLifecycle()
+
+                    // Location sync needs Bluetooth and location permissions; ask, then run the action.
+                    var pendingLocationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+                    val permissionLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestMultiplePermissions(),
+                    ) {
+                        if (hasLocationSyncPermissions(this@MainActivity)) {
+                            pendingLocationAction?.invoke()
+                        } else {
+                            LocationSync.update { s -> s.copy(message = "Location and Bluetooth permissions are needed for location sync") }
+                        }
+                        pendingLocationAction = null
+                    }
+                    fun withLocationPermissions(action: () -> Unit) {
+                        if (hasLocationSyncPermissions(this@MainActivity)) {
+                            action()
+                        } else {
+                            pendingLocationAction = action
+                            permissionLauncher.launch(locationSyncPermissions())
+                        }
+                    }
+                    val locationActions = LocationActions(
+                        onPair = { withLocationPermissions(viewModel::pairForLocation) },
+                        onEnable = { on -> if (on) withLocationPermissions { viewModel.setLocationSync(true) } else viewModel.setLocationSync(false) },
+                        onInterval = viewModel::setLocationInterval,
+                        onForget = viewModel::forgetLocationPairing,
+                    )
                     Column(
                         Modifier
                             .fillMaxSize()
@@ -112,6 +146,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             if (!connected) {
                                 ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
+                                LocationCard(locationSync, locationActions)
                             } else if (state.screen == Screen.Home) {
                                 HomeScreen(
                                     state,
@@ -119,6 +154,8 @@ class MainActivity : ComponentActivity() {
                                     onSyncClock = viewModel::syncClock,
                                     onAutoSyncClockChange = viewModel::setAutoSyncClock,
                                     onDisconnect = viewModel::disconnect,
+                                    locationSync = locationSync,
+                                    locationActions = locationActions,
                                 )
                             } else {
                                 RemoteScreen(
@@ -175,6 +212,8 @@ private fun HomeScreen(
     onSyncClock: () -> Unit,
     onAutoSyncClockChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
+    locationSync: LocationSyncStatus,
+    locationActions: LocationActions,
 ) {
     val info = state.deviceInfo
     val status = state.cameraStatus
@@ -212,7 +251,7 @@ private fun HomeScreen(
     Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
         Text("Remote & live view", style = MaterialTheme.typography.titleMedium)
     }
-    InfoCard("Time & location") {
+    InfoCard("Time") {
         InfoRow("Camera clock", clockSummary(state.clockOffsetSeconds))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Sync clock on connect", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -221,9 +260,69 @@ private fun HomeScreen(
         FilledTonalButton(onClick = onSyncClock, enabled = state.status == Status.Connected, modifier = Modifier.fillMaxWidth()) {
             Text("Sync clock now")
         }
-        InfoRow("Location", "coming soon (Bluetooth)")
     }
+    LocationCard(locationSync, locationActions)
     TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+}
+
+class LocationActions(
+    val onPair: () -> Unit,
+    val onEnable: (Boolean) -> Unit,
+    val onInterval: (Int) -> Unit,
+    val onForget: () -> Unit,
+)
+
+/**
+ * Bluetooth location sync: pair once, then the phone's position is sent to the camera every
+ * few seconds in the background, so each photo is tagged where it was taken. Works without
+ * the Wi-Fi remote being connected.
+ */
+@Composable
+private fun LocationCard(status: LocationSyncStatus, actions: LocationActions) {
+    InfoCard("Location") {
+        if (!status.paired) {
+            Text(
+                "Tag photos with where they were taken. On the camera, open Setup menu > " +
+                    "Connect to smart device > Pairing (Bluetooth) > Start pairing, then tap Pair camera. " +
+                    "This replaces the camera's pairing with SnapBridge.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = actions.onPair, enabled = !status.pairing, modifier = Modifier.fillMaxWidth()) {
+                Text(if (status.pairing) "Pairing…" else "Pair camera")
+            }
+        } else {
+            InfoRow("Camera", status.cameraName ?: "Paired")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Send location", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Switch(checked = status.running, onCheckedChange = actions.onEnable)
+            }
+            if (status.running) {
+                InfoRow("Camera link", if (status.connected) "Connected" else "Searching")
+                InfoRow(
+                    "Last sent",
+                    status.lastSentAtMillis?.let { t ->
+                        DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(t)) +
+                            (status.lastAccuracyMeters?.let { " (±${it.toInt()} m)" } ?: "")
+                    } ?: "–",
+                )
+            }
+            Text("Send every", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (s in LocationSync.INTERVAL_CHOICES) {
+                    FilterChip(
+                        selected = status.intervalSeconds == s,
+                        onClick = { actions.onInterval(s) },
+                        label = { Text(if (s < 60) "$s s" else "${s / 60} min") },
+                    )
+                }
+            }
+            Row {
+                TextButton(onClick = actions.onPair, enabled = !status.pairing) { Text("Pair again") }
+                TextButton(onClick = actions.onForget) { Text("Forget camera") }
+            }
+        }
+        status.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
 }
 
 /** "In sync", or how far the camera's clock is from the phone's. */
