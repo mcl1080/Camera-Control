@@ -33,9 +33,6 @@ import io.github.mcl1080.cameracontrol.nikonble.GeoFix
 import io.github.mcl1080.cameracontrol.nikonble.LocationPayloadEncoder
 import io.github.mcl1080.cameracontrol.nikonble.TimePayloadEncoder
 import android.os.SystemClock
-import android.util.Log
-import java.text.DateFormat
-import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -209,7 +206,6 @@ class LocationSyncService : Service() {
             client = null
             LocationSync.update { it.copy(connected = false) }
             stopLocationUpdates()
-            Log.w(TAG, "Camera link lost", e)
             status("Camera disconnected; waiting for it to come back")
             next = nextBackoff()
         } finally {
@@ -291,20 +287,9 @@ class LocationSyncService : Service() {
         return current
     }
 
-    /** Writes the phone's time to the camera and records whether the camera accepted it. */
+    /** Sets the camera's clock from the phone; the camera accepts this on each connection. */
     private fun sendTime(c: NikonBleClient) {
-        val result = if (!c.hasTimeCharacteristic()) {
-            "Camera doesn't offer it"
-        } else {
-            val payload = TimePayloadEncoder.encode()
-            val hex = payload.joinToString(" ") { "%02X".format(it) }
-            runCatching { c.writeTimePayload(payload) }.fold(
-                onSuccess = { "Accepted at ${DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date())} ($hex)" },
-                onFailure = { "Rejected: ${it.message} ($hex)" },
-            )
-        }
-        Log.i(TAG, "Bluetooth time write: $result")
-        LocationSync.update { it.copy(timeWriteResult = result) }
+        runCatching { c.writeTimePayload(TimePayloadEncoder.encode()) }
     }
 
     private fun isAccurate(location: Location) = !location.hasAccuracy() || location.accuracy <= MAX_ACCURACY_M
@@ -359,7 +344,6 @@ class LocationSyncService : Service() {
         private const val NIKON_COMPANY_ID = 0x0399
         private const val RECONNECT_ATTEMPTS = 4
         private const val RECONNECT_RETRY_DELAY_MS = 1_200L
-        private const val TAG = "LocationSync"
         private const val SCAN_TIMEOUT_MS = 12_000L
         private const val BACKOFF_START_SECONDS = 5L
         private const val BACKOFF_MAX_SECONDS = 30L

@@ -3,7 +3,6 @@ package io.github.mcl1080.cameracontrol
 import android.app.Application
 import android.content.Context
 import android.graphics.BitmapFactory
-import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
@@ -152,7 +151,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 camera = cam
-                logCapabilities(cam.deviceInfo)
                 _state.update {
                     it.copy(
                         status = Status.Connected,
@@ -466,21 +464,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         if (camera != null) disconnect()
     }
 
-    /**
-     * Writes the camera's supported PTP operations and properties to Logcat (tag CameraControl),
-     * to look for features such as sending location over Wi-Fi.
-     */
-    private fun logCapabilities(info: DeviceInfo) {
-        fun hex(codes: Set<Int>) = codes.sorted().joinToString(" ") { "%04X".format(it) }
-        Log.i(TAG, "${info.model} firmware ${info.deviceVersion}")
-        Log.i(TAG, "Operations: ${hex(info.operationsSupported)}")
-        Log.i(TAG, "Properties: ${hex(info.devicePropertiesSupported)}")
-        Log.i(TAG, "Events: ${hex(info.eventsSupported)}")
-        log("Camera supports ${info.operationsSupported.size} operations and ${info.devicePropertiesSupported.size} properties")
-    }
-
     private fun log(message: String) {
-        Log.i(TAG, message)
         val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         _state.update { it.copy(log = (it.log + "$time  $message").takeLast(100)) }
     }
@@ -492,8 +476,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        private const val TAG = "CameraControl"
-
         /** One setting is checked this often, so each is checked about every 1.25 s. */
         private const val WATCH_INTERVAL_MS = 250L
 
