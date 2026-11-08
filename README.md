@@ -14,7 +14,12 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
   switched off to keep a focus you set or to shoot in manual focus.
 - After connecting, a landing page shows the camera's model, firmware, battery, mode, lens
   focal length and memory cards (shots left, free space), with the remote on its own screen.
-- **Step 3 (next):** clock and GPS sync.
+- **Step 3 (this version):** the camera's clock is set from the phone over Wi-Fi when
+  connecting (can be turned off) or with "Sync clock now", and the landing page shows whether
+  the clock is in sync. Location sync pairs with the camera over Bluetooth and sends the
+  phone's position (and time) every few seconds from a background service, so each photo is
+  geotagged where it was taken. It works without the Wi-Fi remote connected. This is not yet
+  confirmed on a Z5 (the protocol was verified on a Z7 II).
 
 ## Project layout
 
@@ -40,3 +45,20 @@ Run the protocol tests with `./gradlew :ptpip:test`.
 4. The first time, the camera may ask you to confirm the connection on its screen.
 
 If it fails, the log on screen shows each step and the camera's error code.
+
+## Location sync (Bluetooth)
+
+1. On the camera: **Setup menu > Connect to smart device > Pairing (Bluetooth) > Start pairing**.
+   This replaces any existing SnapBridge pairing.
+2. In the app's **Location** card, tap **Pair camera** and allow the location, Bluetooth and
+   notification permissions. Pairing can take up to a minute; accept the Bluetooth pairing
+   request if Android shows one.
+3. Leave **Send location** on. A notification shows the link status while it runs. On the
+   camera, check **Setup menu > Location data** shows that the phone's location is being used.
+
+## License
+
+Camera Control is free software under the GNU General Public License v3.0 (see `LICENSE`).
+The Nikon Bluetooth pairing and location code is ported from
+[nikongeotag](https://github.com/rjmendez/nikongeotag) (GPL-3.0), which builds on
+nsg (AGPL-3.0) and furble (MIT).

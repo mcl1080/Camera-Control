@@ -105,6 +105,10 @@ class FakeNikonCamera(
 
     private var focusResultPending: Int? = null
 
+    /** The camera's clock as a PTP DateTime string. */
+    @Volatile
+    var clock = "20240101T120000"
+
     /** Bytes the fake sends as a live view frame: a fake Nikon header, then a tiny "JPEG". */
     val liveViewJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 1, 2, 3, 0xFF.toByte(), 0xD9.toByte())
 
@@ -237,6 +241,11 @@ class FakeNikonCamera(
             }
             OpCode.GET_DEVICE_PROP_VALUE -> {
                 val code = r.u32()
+                if (code == PropCode.DATE_TIME) {
+                    sendData(out, tid, PtpDataWriter().ptpString(clock).toByteArray())
+                    respond(ResponseCode.OK)
+                    return
+                }
                 val type = propTypes.getValue(code)
                 val current = if (code == PropCode.EXPOSURE_PROGRAM_MODE) mode else props.getValue(code)
                 sendData(out, tid, DevicePropDesc.encodeValue(type, current))
@@ -248,6 +257,11 @@ class FakeNikonCamera(
                 val end = PtpIpPacket.read(input)
                 check(end.type == PacketType.END_DATA)
                 val reader = end.reader(4)
+                if (code == PropCode.DATE_TIME) {
+                    clock = reader.ptpString()
+                    respond(ResponseCode.OK)
+                    return
+                }
                 props[code] = DevicePropDesc.readValue(reader, propTypes.getValue(code))
                 respond(ResponseCode.OK)
             }

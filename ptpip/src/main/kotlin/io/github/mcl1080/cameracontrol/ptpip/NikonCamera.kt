@@ -1,6 +1,8 @@
 package io.github.mcl1080.cameracontrol.ptpip
 
 import java.io.Closeable
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 /**
  * High-level control of a Nikon camera over PTP/IP.
@@ -134,6 +136,27 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
             }
     }
 
+    // ---- Clock ----
+
+    /** The camera's clock, or null if it doesn't report one. */
+    fun readClock(): LocalDateTime? {
+        if (PropCode.DATE_TIME !in deviceInfo.devicePropertiesSupported) return null
+        val resp = connection.transaction(OpCode.GET_DEVICE_PROP_VALUE, intArrayOf(PropCode.DATE_TIME))
+        if (!resp.isOk || resp.data == null) return null
+        return parsePtpDateTime(PtpDataReader(resp.data).ptpString())
+    }
+
+    /** Sets the camera's clock, for example to the phone's local time. */
+    fun setClock(time: LocalDateTime) {
+        if (PropCode.DATE_TIME !in deviceInfo.devicePropertiesSupported) {
+            throw PtpIpException("This camera does not let the app set its clock")
+        }
+        val value = PtpDataWriter().ptpString(time.format(PTP_DATE_TIME)).toByteArray()
+        val resp = connection.transaction(OpCode.SET_DEVICE_PROP_VALUE, intArrayOf(PropCode.DATE_TIME), value)
+        if (!resp.isOk) throw PtpResponseException(resp.code, OpCode.SET_DEVICE_PROP_VALUE)
+        log("Camera clock set to ${time.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}")
+    }
+
     // ---- Exposure settings ----
 
     fun getPropDesc(code: Int): DevicePropDesc {
@@ -251,5 +274,11 @@ class NikonCamera(private val connection: PtpIpConnection) : Closeable {
         private const val SESSION_ID = 1
         private const val CAPTURE_WITH_AF = -2 // 0xFFFFFFFE
         private const val CAPTURE_WITHOUT_AF = -1 // 0xFFFFFFFF
+
+        /** PTP DateTime format: YYYYMMDDThhmmss, optionally followed by .s (tenths). */
+        private val PTP_DATE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
+
+        fun parsePtpDateTime(s: String): LocalDateTime? =
+            runCatching { LocalDateTime.parse(s.take(15), PTP_DATE_TIME) }.getOrNull()
     }
 }
