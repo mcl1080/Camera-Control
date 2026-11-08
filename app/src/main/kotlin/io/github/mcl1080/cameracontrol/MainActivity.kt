@@ -1,6 +1,20 @@
 package io.github.mcl1080.cameracontrol
 
 import android.os.Bundle
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -87,6 +101,9 @@ import io.github.mcl1080.cameracontrol.ptpip.ExposureState
 import io.github.mcl1080.cameracontrol.ptpip.LiveViewInfo
 import io.github.mcl1080.cameracontrol.ptpip.SettingState
 
+/** The app's pages. The remote itself opens from the Wi-Fi page once connected. */
+private enum class Page { Home, Wifi, Location }
+
 class MainActivity : ComponentActivity() {
     private val viewModel: CameraViewModel by viewModels()
 
@@ -145,52 +162,76 @@ class MainActivity : ComponentActivity() {
                             withLocationPermissions { backgroundLauncher.launch(BACKGROUND_LOCATION) }
                         },
                     )
+
+                    var page by rememberSaveable { mutableStateOf(Page.Home) }
+                    val connected = state.status != Status.Disconnected && state.status != Status.Connecting
+                    val inRemote = connected && state.screen == Screen.Remote
+                    BackHandler(enabled = !inRemote && page != Page.Home) { page = Page.Home }
+                    BackHandler(enabled = inRemote) { viewModel.goHome() }
+
                     Column(
                         Modifier
                             .fillMaxSize()
                             .safeDrawingPadding()
-                            .padding(16.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        val connected = state.status != Status.Disconnected && state.status != Status.Connecting
-                        BackHandler(enabled = connected && state.screen == Screen.Remote) { viewModel.goHome() }
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            if (!connected) {
-                                ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
-                                LocationCard(locationSync, locationActions)
-                            } else if (state.screen == Screen.Home) {
-                                HomeScreen(
-                                    state,
-                                    onOpenRemote = viewModel::openRemote,
-                                    onSyncClock = viewModel::syncClock,
-                                    onAutoSyncClockChange = viewModel::setAutoSyncClock,
-                                    onDisconnect = viewModel::disconnect,
-                                    locationSync = locationSync,
-                                    locationActions = locationActions,
-                                )
-                            } else {
-                                RemoteScreen(
+                        when {
+                            inRemote -> {
+                                PageColumn(Modifier.weight(1f)) {
+                                    RemoteScreen(
+                                        state = state,
+                                        frame = frame,
+                                        fps = fps,
+                                        liveViewInfo = liveViewInfo,
+                                        onTapToFocus = viewModel::tapToFocus,
+                                        onFocus = viewModel::focus,
+                                        onLiveViewChange = viewModel::setLiveView,
+                                        onTakePhoto = viewModel::takePhoto,
+                                        onSetExposure = viewModel::setExposure,
+                                        onStepExposure = viewModel::stepExposure,
+                                        onAfOnShootChange = viewModel::setAfOnShoot,
+                                        onBack = viewModel::goHome,
+                                    )
+                                }
+                                LogPanel(state.log)
+                            }
+                            page == Page.Wifi -> {
+                                PageHeader("Wi-Fi remote") { page = Page.Home }
+                                PageColumn(Modifier.weight(1f)) {
+                                    if (!connected) {
+                                        ConnectScreen(state, viewModel::setCameraIp, viewModel::connect)
+                                    } else {
+                                        CameraScreen(
+                                            state,
+                                            onOpenRemote = viewModel::openRemote,
+                                            onSyncClock = viewModel::syncClock,
+                                            onAutoSyncClockChange = viewModel::setAutoSyncClock,
+                                            onDisconnect = viewModel::disconnect,
+                                        )
+                                    }
+                                }
+                                LogPanel(state.log)
+                            }
+                            page == Page.Location -> {
+                                PageHeader("Location sync") { page = Page.Home }
+                                PageColumn(Modifier.weight(1f)) {
+                                    LocationScreen(locationSync, locationActions)
+                                }
+                            }
+                            else -> PageColumn(Modifier.weight(1f)) {
+                                HomePage(
                                     state = state,
-                                    frame = frame,
-                                    fps = fps,
-                                    liveViewInfo = liveViewInfo,
-                                    onTapToFocus = viewModel::tapToFocus,
-                                    onFocus = viewModel::focus,
-                                    onLiveViewChange = viewModel::setLiveView,
-                                    onTakePhoto = viewModel::takePhoto,
-                                    onSetExposure = viewModel::setExposure,
-                                    onStepExposure = viewModel::stepExposure,
-                                    onAfOnShootChange = viewModel::setAfOnShoot,
-                                    onBack = viewModel::goHome,
+                                    location = locationSync,
+                                    onOpenWifi = { page = Page.Wifi },
+                                    onOpenLocation = { page = Page.Location },
+                                    onOpenRemote = {
+                                        page = Page.Wifi
+                                        viewModel.openRemote()
+                                    },
                                 )
                             }
                         }
-                        LogPanel(state.log)
                     }
                 }
             }
@@ -198,14 +239,182 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** A page's scrolling body. */
+@Composable
+private fun PageColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
+}
+
+/** Back arrow and title at the top of a page opened from the home page. */
+@Composable
+private fun PageHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+        }
+        Spacer(Modifier.size(4.dp))
+        Text(title, style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+/** Whether a feature is working, waiting on something, or off: shown as a coloured dot. */
+private enum class Indicator { On, Waiting, Off }
+
+@Composable
+private fun Indicator.color(): Color = when (this) {
+    Indicator.On -> Color(0xFF4CAF50)
+    Indicator.Waiting -> Color(0xFFFFB300)
+    Indicator.Off -> MaterialTheme.colorScheme.outline
+}
+
+/** The landing page: one card per feature, each showing its status and opening its page. */
+@Composable
+private fun HomePage(
+    state: UiState,
+    location: LocationSyncStatus,
+    onOpenWifi: () -> Unit,
+    onOpenLocation: () -> Unit,
+    onOpenRemote: () -> Unit,
+) {
+    val connected = state.status != Status.Disconnected && state.status != Status.Connecting
+    Spacer(Modifier.height(24.dp))
+    Text(
+        stringResource(R.string.app_name),
+        style = MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Text(
+        "Remote control, clock and location for your camera",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    NavCard(
+        icon = painterResource(R.drawable.ic_wifi),
+        title = "Wi-Fi remote",
+        subtitle = wifiSummary(state),
+        indicator = when {
+            connected -> Indicator.On
+            state.status == Status.Connecting -> Indicator.Waiting
+            else -> Indicator.Off
+        },
+        onClick = onOpenWifi,
+    )
+    NavCard(
+        icon = painterResource(R.drawable.ic_bluetooth),
+        title = "Location sync",
+        subtitle = locationSummary(location),
+        indicator = when {
+            location.running && location.connected -> Indicator.On
+            location.running || location.pairing -> Indicator.Waiting
+            else -> Indicator.Off
+        },
+        onClick = onOpenLocation,
+    )
+    if (connected) {
+        Spacer(Modifier.height(4.dp))
+        Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+            Text("Open remote & live view", style = MaterialTheme.typography.titleMedium)
+        }
+    }
+}
+
+@Composable
+private fun NavCard(icon: Painter, title: String, subtitle: String, indicator: Indicator, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            Spacer(Modifier.size(16.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(indicator.color()),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun wifiSummary(state: UiState): String = when (state.status) {
+    Status.Disconnected -> "Not connected"
+    Status.Connecting -> "Connecting…"
+    else -> listOfNotNull(
+        "Connected to ${state.cameraModel ?: "camera"}",
+        state.cameraStatus?.batteryPercent?.let { "battery $it%" },
+    ).joinToString(" · ")
+}
+
+private fun locationSummary(s: LocationSyncStatus): String = when {
+    s.pairing -> "Pairing…"
+    !s.paired -> "Not set up"
+    !s.running -> "Off"
+    s.connected -> "Sending every ${intervalLabel(s.intervalSeconds)}"
+    else -> "Waiting for the camera"
+}
+
+private fun intervalLabel(seconds: Int) = if (seconds < 60) "$seconds s" else "${seconds / 60} min"
+
+/** A numbered instruction. */
+@Composable
+private fun Step(number: Int, text: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Box(
+            Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("$number", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimary)
+        }
+        Spacer(Modifier.size(10.dp))
+        Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    }
+}
+
 @Composable
 private fun ConnectScreen(state: UiState, onIpChange: (String) -> Unit, onConnect: () -> Unit) {
-    Text("Camera Control", style = MaterialTheme.typography.headlineSmall)
-    Text(
-        "On the Z5, open Setup menu > Connect to smart device > Wi-Fi connection > Establish Wi-Fi connection. " +
-            "Join the camera's Wi-Fi network from your phone's settings, then tap Connect.",
-        style = MaterialTheme.typography.bodyMedium,
-    )
+    val context = LocalContext.current
+    InfoCard("Connect to the camera") {
+        Step(1, "On the camera, open Setup menu > Connect to smart device > Wi-Fi connection > Establish Wi-Fi connection.")
+        Step(2, "Join the camera's Wi-Fi network in your phone's settings. If Android warns there's no internet, stay connected.")
+        Step(3, "Come back here and tap Connect.")
+        TextButton(
+            onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) } },
+            contentPadding = PaddingValues(horizontal = 0.dp),
+        ) { Text("Open Wi-Fi settings") }
+    }
     OutlinedTextField(
         value = state.cameraIp,
         onValueChange = onIpChange,
@@ -215,33 +424,39 @@ private fun ConnectScreen(state: UiState, onIpChange: (String) -> Unit, onConnec
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         modifier = Modifier.fillMaxWidth(),
     )
-    Button(onClick = onConnect, enabled = state.status == Status.Disconnected) {
-        Text(if (state.status == Status.Connecting) "Connecting…" else "Connect")
+    Button(
+        onClick = onConnect,
+        enabled = state.status == Status.Disconnected,
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+    ) {
+        Text(if (state.status == Status.Connecting) "Connecting…" else "Connect", style = MaterialTheme.typography.titleMedium)
     }
 }
 
-/** The landing page once connected: what the camera is and how it's doing, and the way to the remote. */
+/** The Wi-Fi page once connected: what the camera is and how it's doing, and the way to the remote. */
 @Composable
-private fun HomeScreen(
+private fun CameraScreen(
     state: UiState,
     onOpenRemote: () -> Unit,
     onSyncClock: () -> Unit,
     onAutoSyncClockChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
-    locationSync: LocationSyncStatus,
-    locationActions: LocationActions,
 ) {
     val info = state.deviceInfo
     val status = state.cameraStatus
     val exposure = state.exposure
 
-    Text(state.cameraModel ?: "Camera", style = MaterialTheme.typography.headlineSmall)
-    Text("Connected over Wi-Fi", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(state.cameraModel ?: "Camera", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(Indicator.On.color()))
+            Spacer(Modifier.size(6.dp))
+            Text("Connected over Wi-Fi", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 
-    InfoCard("Camera") {
-        InfoRow("Model", info?.model ?: "–")
-        InfoRow("Firmware", info?.deviceVersion?.ifBlank { null } ?: "–")
-        InfoRow("Serial number", info?.serialNumber?.trim()?.ifBlank { null } ?: "–")
+    Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+        Text("Remote & live view", style = MaterialTheme.typography.titleMedium)
     }
 
     InfoCard("Status") {
@@ -264,9 +479,6 @@ private fun HomeScreen(
         }
     }
 
-    Button(onClick = onOpenRemote, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-        Text("Remote & live view", style = MaterialTheme.typography.titleMedium)
-    }
     InfoCard("Time") {
         InfoRow("Camera clock", clockSummary(state.clockOffsetSeconds))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -277,8 +489,14 @@ private fun HomeScreen(
             Text("Sync clock now")
         }
     }
-    LocationCard(locationSync, locationActions)
-    TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+
+    InfoCard("Camera") {
+        InfoRow("Model", info?.model ?: "–")
+        InfoRow("Firmware", info?.deviceVersion?.ifBlank { null } ?: "–")
+        InfoRow("Serial number", info?.serialNumber?.trim()?.ifBlank { null } ?: "–")
+    }
+
+    OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
 }
 
 class LocationActions(
@@ -295,66 +513,107 @@ class LocationActions(
  * the Wi-Fi remote being connected.
  */
 @Composable
-private fun LocationCard(status: LocationSyncStatus, actions: LocationActions) {
-    InfoCard("Location") {
-        if (!status.paired) {
+private fun LocationScreen(status: LocationSyncStatus, actions: LocationActions) {
+    Text(
+        "Tags each photo with where it was taken and keeps the camera's clock set, by sending " +
+            "the phone's location and time over Bluetooth. Works without the Wi-Fi remote connected.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (!status.paired) {
+        InfoCard("Pair with the camera") {
+            Step(1, "On the camera, open Setup menu > Connect to smart device > Pairing (Bluetooth) > Start pairing.")
+            Step(2, "Tap Pair camera and allow the permissions. Accept the Bluetooth pairing request if Android shows one.")
             Text(
-                "Tag photos with where they were taken. On the camera, open Setup menu > " +
-                    "Connect to smart device > Pairing (Bluetooth) > Start pairing, then tap Pair camera. " +
-                    "This replaces the camera's pairing with SnapBridge.",
+                "This replaces the camera's pairing with SnapBridge.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = actions.onPair, enabled = !status.pairing, modifier = Modifier.fillMaxWidth()) {
-                Text(if (status.pairing) "Pairing…" else "Pair camera")
-            }
-        } else {
-            InfoRow("Camera", status.cameraName ?: "Paired")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Send location", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                Switch(checked = status.running, onCheckedChange = actions.onEnable)
-            }
-            if (status.running) {
-                InfoRow("Camera link", if (status.connected) "Connected" else "Searching")
-                InfoRow(
-                    "Last sent",
-                    status.lastSentAtMillis?.let { t ->
-                        DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(t)) +
-                            (status.lastAccuracyMeters?.let { " (±${it.toInt()} m)" } ?: "")
-                    } ?: "–",
-                )
-            }
-            Text("Send every", style = MaterialTheme.typography.bodyMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (s in LocationSync.INTERVAL_CHOICES) {
-                    FilterChip(
-                        selected = status.intervalSeconds == s,
-                        onClick = { actions.onInterval(s) },
-                        label = { Text(if (s < 60) "$s s" else "${s / 60} min") },
-                    )
-                }
-            }
-            if (status.backgroundAllowed) {
+        }
+        Button(
+            onClick = actions.onPair,
+            enabled = !status.pairing,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) {
+            Text(if (status.pairing) "Pairing…" else "Pair camera", style = MaterialTheme.typography.titleMedium)
+        }
+        status.message?.let { StatusMessage(it) }
+        return
+    }
+
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Send location", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Keeps running in the background and starts sending as soon as the camera " +
-                        "turns on, including after the phone restarts.",
+                    locationSummary(status),
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            } else {
-                Text(
-                    "Keeps running in the background while Send location is on. To have it start " +
-                        "again by itself after the phone restarts, set this app's location " +
-                        "permission to \"Allow all the time\".",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                TextButton(onClick = actions.onAllowBackground) { Text("Allow all the time") }
             }
-            Row {
-                TextButton(onClick = actions.onPair, enabled = !status.pairing) { Text("Pair again") }
-                TextButton(onClick = actions.onForget) { Text("Forget camera") }
+            Switch(checked = status.running, onCheckedChange = actions.onEnable)
+        }
+    }
+
+    InfoCard("Status") {
+        InfoRow("Camera", status.cameraName ?: "Paired")
+        if (status.running) {
+            InfoRow("Camera link", if (status.connected) "Connected" else "Searching")
+            InfoRow(
+                "Last sent",
+                status.lastSentAtMillis?.let { t ->
+                    DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(t)) +
+                        (status.lastAccuracyMeters?.let { " (±${it.toInt()} m)" } ?: "")
+                } ?: "–",
+            )
+        }
+        status.message?.let { StatusMessage(it) }
+    }
+
+    InfoCard("Send every") {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (s in LocationSync.INTERVAL_CHOICES) {
+                FilterChip(
+                    selected = status.intervalSeconds == s,
+                    onClick = { actions.onInterval(s) },
+                    label = { Text(intervalLabel(s)) },
+                )
             }
         }
-        status.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
+
+    InfoCard("Background") {
+        if (status.backgroundAllowed) {
+            Text(
+                "Keeps running in the background and starts sending as soon as the camera " +
+                    "turns on, including after the phone restarts.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else {
+            Text(
+                "Keeps running in the background while Send location is on. To have it start " +
+                    "again by itself after the phone restarts, set this app's location " +
+                    "permission to \"Allow all the time\".",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            FilledTonalButton(onClick = actions.onAllowBackground, modifier = Modifier.fillMaxWidth()) {
+                Text("Allow all the time")
+            }
+        }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = actions.onPair, enabled = !status.pairing, modifier = Modifier.weight(1f)) {
+            Text(if (status.pairing) "Pairing…" else "Pair again")
+        }
+        OutlinedButton(onClick = actions.onForget, modifier = Modifier.weight(1f)) { Text("Forget camera") }
+    }
+}
+
+@Composable
+private fun StatusMessage(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /** "In sync", or how far the camera's clock is from the phone's. */
@@ -379,8 +638,8 @@ private fun cardSummary(card: StorageInfo): String {
 
 @Composable
 private fun InfoCard(title: String, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             content()
         }

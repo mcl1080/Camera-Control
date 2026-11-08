@@ -12,10 +12,11 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
   Settings changed on the camera's dials show up in the app within about a second.
   Tap the live view to focus there, or use the Focus button. "Autofocus on shoot" can be
   switched off to keep a focus you set or to shoot in manual focus.
-- After connecting, a landing page shows the camera's model, firmware, battery, mode, lens
-  focal length and memory cards (shots left, free space), with the remote on its own screen.
+- The home page has a card for the Wi-Fi remote and one for Bluetooth location sync, each
+  showing its status and opening its own page. After connecting, the Wi-Fi page shows the
+  camera's model, firmware, battery, mode, lens focal length and memory cards (shots left, free space), with the remote on its own screen.
 - **Step 3 (this version):** the camera's clock is set from the phone over Wi-Fi when
-  connecting (can be turned off) or with "Sync clock now", and the landing page shows whether
+  connecting (can be turned off) or with "Sync clock now", and the Wi-Fi page shows whether
   the clock is in sync. Location sync pairs with the camera over Bluetooth and sends the
   phone's position (and time) every few seconds from a background service, so each photo is
   geotagged where it was taken. It works without the Wi-Fi remote connected. This is not yet
@@ -41,7 +42,7 @@ Run the protocol tests with `./gradlew :ptpip:test`.
 1. On the camera: **Setup menu > Connect to smart device > Wi-Fi connection > Establish Wi-Fi connection**.
    The camera shows its network name (SSID) and password.
 2. On the phone, join that Wi-Fi network in Settings. Android may warn that it has no internet; choose to stay connected.
-3. Open Camera Control and tap **Connect**. The camera's address is normally `192.168.1.1`.
+3. Open Camera Control, tap **Wi-Fi remote** on the home page, then tap **Connect**. The camera's address is normally `192.168.1.1`.
 4. The first time, the camera may ask you to confirm the connection on its screen.
 
 If it fails, the log on screen shows each step and the camera's error code.
@@ -50,7 +51,7 @@ If it fails, the log on screen shows each step and the camera's error code.
 
 1. On the camera: **Setup menu > Connect to smart device > Pairing (Bluetooth) > Start pairing**.
    This replaces any existing SnapBridge pairing.
-2. In the app's **Location** card, tap **Pair camera** and allow the location, Bluetooth and
+2. In the app, open **Location sync** from the home page and tap **Pair camera** and allow the location, Bluetooth and
    notification permissions. Pairing can take up to a minute; accept the Bluetooth pairing
    request if Android shows one.
 3. Leave **Send location** on. A notification shows the link status while it runs. On the
