@@ -1,14 +1,20 @@
 name: Build APK
 
-# - Pull requests and manual runs: build the APK and attach it to the run as a download
+# - Pull requests: build the APK and attach it to the run as a download
 #   (signed with the release key if the secrets are set, otherwise with a debug key).
-# - Pushing a tag like v0.3.0: build a release-signed APK and create a DRAFT pre-release
-#   with it. Nothing is public until you press "Publish release" on GitHub.
+# - Releasing: either push a tag like v0.3.0, or open Actions > Build APK > Run workflow and
+#   type a version. Both build a release-signed APK and create a DRAFT pre-release with it.
+#   Nothing is public until you press "Publish release" on GitHub.
 on:
   push:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.3.0 (leave empty to just build an APK)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -17,34 +23,56 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
 
       - name: Work out the version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             name="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            name="${INPUT_VERSION#v}"
           else
             name="0.0.0-dev.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
           fi
+          if [[ "$GITHUB_REF" == refs/tags/v* || -n "$INPUT_VERSION" ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "tag=v$name" >> "$GITHUB_OUTPUT"
           echo "code=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Restore the signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.LATLO_KEYSTORE_BASE64 }}
+          LATLO_KEYSTORE_PASSWORD: ${{ secrets.LATLO_KEYSTORE_PASSWORD }}
+          LATLO_KEY_ALIAS: ${{ secrets.LATLO_KEY_ALIAS }}
+          IS_RELEASE: ${{ steps.version.outputs.release }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/latlo-release.jks"
-            echo "LATLO_KEYSTORE_PATH=$RUNNER_TEMP/latlo-release.jks" >> "$GITHUB_ENV"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            ks="$RUNNER_TEMP/latlo-release.jks"
+            # Tolerate line breaks, spaces and certutil's BEGIN/END lines from copy-pasting.
+            if ! printf '%s' "$KEYSTORE_BASE64" | tr -d '\r' | grep -v -- '-----' \
+                | tr -d ' \t\n' | base64 --decode > "$ks"; then
+              echo "::error::LATLO_KEYSTORE_BASE64 isn't valid base64. Re-copy it with the command in RELEASING.md and paste it again as the secret's value."
+              exit 1
+            fi
+            if ! keytool -list -keystore "$ks" -storepass "$LATLO_KEYSTORE_PASSWORD" \
+                -alias "$LATLO_KEY_ALIAS" > /dev/null; then
+              echo "::error::The keystore decoded, but keytool couldn't open it with LATLO_KEYSTORE_PASSWORD and LATLO_KEY_ALIAS. Check those two secrets."
+              exit 1
+            fi
+            echo "LATLO_KEYSTORE_PATH=$ks" >> "$GITHUB_ENV"
+          elif [ "$IS_RELEASE" = "true" ]; then
             echo "::error::The LATLO_KEYSTORE_BASE64 secret is not set, so a release can't be signed. See RELEASING.md."
             exit 1
           else
@@ -76,11 +104,13 @@ jobs:
           path: dist/
 
       - name: Create a draft pre-release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.apk dist/SHA256SUMS.txt \
-            --draft --prerelease \
+          # A manual run creates the tag on this commit when the draft is published.
+          gh release create "$TAG" dist/*.apk dist/SHA256SUMS.txt \
+            --draft --prerelease --target "$GITHUB_SHA" \
             --title "Latlo ${{ steps.version.outputs.name }} (test build)" \
             --notes-file .github/release-notes.md
