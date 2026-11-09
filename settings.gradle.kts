@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CameraControl"
 include(":app")
-include(":ptpip")
+include(":protocol")

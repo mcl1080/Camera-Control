@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Run protocol tests
-        run: ./gradlew :ptpip:test
+        run: ./gradlew :protocol:test
 
       - name: Build the APK
         env:

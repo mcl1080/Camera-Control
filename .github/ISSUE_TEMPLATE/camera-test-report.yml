@@ -37,7 +37,6 @@ body:
         - label: Bluetooth pairing
         - label: Location sync (photos geotagged)
         - label: Clock sync
-        - label: Wi-Fi remote
   - type: dropdown
     id: result
     attributes:
