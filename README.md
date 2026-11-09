@@ -49,13 +49,26 @@ If it fails, the log on screen shows each step and the camera's error code.
 
 ## Location sync (Bluetooth)
 
-1. On the camera: **Setup menu > Connect to smart device > Pairing (Bluetooth) > Start pairing**.
-   This replaces any existing SnapBridge pairing.
+Location and time sync works with Nikon, Sony, Canon, Fujifilm and Ricoh cameras that pair with
+their maker's phone app over Bluetooth. Only Nikon has been tried on a real camera so far; the
+other brands use protocols reverse-engineered by open-source projects (see License) and are
+untested here.
+
+| Brand | Pairing mode on the camera (menu names vary by model) | What gets sent |
+|-------|------------------------------------------------------|----------------|
+| Nikon Z | Setup > Connect to smart device > Pairing (Bluetooth) > Start pairing | Location every few seconds; clock on connect |
+| Sony Alpha / ZV | Network > Bluetooth: Bluetooth Function on, then Pairing; turn on Location Info. Link | Location every few seconds; clock on connect |
+| Canon EOS / PowerShot | Wireless settings > Connect to smartphone > Add a device. Accept the phone on the camera's screen | Location (with time) when the camera asks |
+| Fujifilm X / GFX | Network/USB settings > Bluetooth/Smartphone setting > Pairing registration | Location (with time) when the camera asks, about every 10 s |
+| Ricoh GR III / IIIx / IV | Settings > Bluetooth > Pairing | Location every few seconds; clock on connect |
+
+1. Put the camera in Bluetooth pairing mode as above. This replaces any pairing with the maker's
+   app (SnapBridge, Creators' App, Camera Connect, XApp or GR World).
 2. In the app, open **Location sync** from the home page and tap **Pair camera** and allow the location, Bluetooth and
    notification permissions. Pairing can take up to a minute; accept the Bluetooth pairing
    request if Android shows one.
-3. Leave **Send location** on. A notification shows the link status while it runs. On the
-   camera, check **Setup menu > Location data** shows that the phone's location is being used.
+3. Leave **Send location** on. A notification shows the link status while it runs. On a Nikon,
+   check **Setup menu > Location data** shows that the phone's location is being used.
 
 Once it's on, there's nothing to do in the app: it keeps running in the background (with a
 notification) and starts sending the clock and location whenever the camera turns on. GPS only
@@ -67,4 +80,6 @@ phone restarts, tap **Allow all the time** in the Location card and choose that 
 Camera Control is free software under the GNU General Public License v3.0 (see `LICENSE`).
 The Nikon Bluetooth pairing and location code is ported from
 [nikongeotag](https://github.com/rjmendez/nikongeotag) (GPL-3.0), which builds on
-nsg (AGPL-3.0) and furble (MIT).
+nsg (AGPL-3.0) and furble (MIT). The Sony and Ricoh protocols come from
+[CameraSync](https://github.com/rock3r/CameraSync) (Apache-2.0), and the Canon and Fujifilm
+protocols from [furble](https://github.com/gkoh/furble) (MIT).

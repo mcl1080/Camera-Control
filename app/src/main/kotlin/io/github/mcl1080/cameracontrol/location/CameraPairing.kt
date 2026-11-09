@@ -21,13 +21,21 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
+import io.github.mcl1080.cameracontrol.brandble.CameraBrand
+import io.github.mcl1080.cameracontrol.brandble.CanonBle
+import io.github.mcl1080.cameracontrol.brandble.FujifilmBle
+import io.github.mcl1080.cameracontrol.brandble.RicohBle
+import io.github.mcl1080.cameracontrol.brandble.SonyBle
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Pairs the phone with a Nikon Z camera for location sync, the way SnapBridge does:
+ * Pairs the phone with a camera for location sync. It scans for any supported brand in
+ * Bluetooth pairing mode; Sony, Canon, Fujifilm and Ricoh are handed to [BrandLinks].
+ *
+ * A Nikon Z camera pairs the way SnapBridge does:
  *  1. Find the camera's Bluetooth LE advert while it is in pairing mode.
  *  2. Run the 4-stage handshake and register this phone's name with the camera.
  *  3. Bond over Bluetooth Classic (the camera shows a code to confirm). The camera only
@@ -49,8 +57,10 @@ class CameraPairing(private val context: Context, private val status: (String) -
         }
 
         status("Looking for the camera. Put it in Bluetooth pairing mode.")
-        val camera = scanForPairingCamera(adapter, SCAN_TIMEOUT_MS)
+        val found = scanForPairingCamera(adapter, SCAN_TIMEOUT_MS)
             ?: run { status("No camera found in pairing mode"); return false }
+        if (found.brand != CameraBrand.NIKON) return pairOtherBrand(found)
+        val camera = found.device
         val cameraName = camera.name
         status("Found ${cameraName ?: "camera"}; pairing…")
 
@@ -88,17 +98,63 @@ class CameraPairing(private val context: Context, private val status: (String) -
         return true
     }
 
-    private fun scanForPairingCamera(adapter: BluetoothAdapter, timeoutMs: Long): BluetoothDevice? {
+    /** A camera found in pairing mode, with what its advert said. */
+    private class Found(val device: BluetoothDevice, val brand: CameraBrand, val name: String?, val fujifilmData: ByteArray?, val services: List<java.util.UUID>)
+
+    /** Sony, Canon, Fujifilm or Ricoh: connect, run the brand's pairing, and remember the camera. */
+    private fun pairOtherBrand(found: Found): Boolean {
+        val brand = found.brand
+        val label = found.name ?: "${brand.displayName} camera"
+        status("Found $label; pairing…")
+        val variant = if (brand == CameraBrand.FUJIFILM) FujifilmBle.variant(found.fujifilmData, found.services) else null
+        val camera = SavedCamera(
+            brand = brand,
+            name = found.name,
+            address = found.device.address,
+            fujifilmVariant = variant,
+            fujifilmToken = if (variant == FujifilmBle.Variant.BASIC) found.fujifilmData?.let(FujifilmBle::basicToken) else null,
+        )
+        for (attempt in 1..HANDSHAKE_ATTEMPTS) {
+            var link: CameraLink? = null
+            try {
+                link = BrandLinks.open(context, camera, found.device, firstTime = true, status = status)
+                if (link != null) {
+                    runCatching { link.sendTime(System.currentTimeMillis()) }
+                    LocationSync.saveCamera(context, camera)
+                    status("Paired with $label")
+                    return true
+                }
+            } catch (e: Exception) {
+                status("Pairing attempt $attempt failed: ${e.message}")
+                // A refusal on the camera won't change on a retry.
+                if (e.message?.contains("declined") == true) return false
+            } finally {
+                link?.close()
+            }
+            Thread.sleep(1_500)
+        }
+        status("Pairing failed. Keep the camera in pairing mode and try again.")
+        return false
+    }
+
+    private fun scanForPairingCamera(adapter: BluetoothAdapter, timeoutMs: Long): Found? {
         val scanner = adapter.bluetoothLeScanner ?: return null
-        val found = AtomicReference<BluetoothDevice?>(null)
+        val found = AtomicReference<Found?>(null)
         val latch = CountDownLatch(1)
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val hasService = result.scanRecord?.serviceUuids?.any { it.uuid == NikonBleClient.SERVICE_UUID } == true
-                if (hasService || isNikonName(result.device?.name)) {
-                    found.set(result.device)
-                    latch.countDown()
+                val device = result.device ?: return
+                val record = result.scanRecord
+                val name = device.name ?: record?.deviceName
+                val services = record?.serviceUuids?.map { it.uuid }.orEmpty()
+                val makers = buildMap {
+                    record?.manufacturerSpecificData?.let { m -> for (i in 0 until m.size()) put(m.keyAt(i), m.valueAt(i)) }
                 }
+                val brand = CameraBrand.recognize(name, services, makers) ?: return
+                val fuji = makers[CameraBrand.FUJIFILM_COMPANY_ID]
+                // A Fujifilm camera only advertises what pairing needs while in pairing mode.
+                if (brand == CameraBrand.FUJIFILM && FujifilmBle.variant(fuji, services) == null) return
+                if (found.compareAndSet(null, Found(device, brand, name, fuji, services))) latch.countDown()
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -106,7 +162,7 @@ class CameraPairing(private val context: Context, private val status: (String) -
                 latch.countDown()
             }
         }
-        val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(NikonBleClient.SERVICE_UUID)).build())
+        val filters = pairingScanFilters()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         return try {
             scanner.startScan(filters, settings, callback)
@@ -198,6 +254,16 @@ class CameraPairing(private val context: Context, private val status: (String) -
         }
 
     companion object {
+        /** Adverts any supported camera sends in pairing mode (any one matches). */
+        fun pairingScanFilters(): List<ScanFilter> = listOf(
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(NikonBleClient.SERVICE_UUID)).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(SonyBle.REMOTE_SERVICE)).build(),
+            ScanFilter.Builder().setManufacturerData(CameraBrand.SONY_COMPANY_ID, byteArrayOf()).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(CanonBle.SERVICE)).build(),
+            ScanFilter.Builder().setManufacturerData(CameraBrand.FUJIFILM_COMPANY_ID, byteArrayOf()).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(RicohBle.SCAN_SERVICE)).build(),
+        )
+
         private const val SCAN_TIMEOUT_MS = 30_000L
         private const val HANDSHAKE_ATTEMPTS = 4
         private const val BOND_ATTEMPTS = 3

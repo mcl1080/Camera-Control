@@ -18,7 +18,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
             intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
         ) return
-        if (!LocationSync.isEnabled(context) || LocationSync.savedIdentity(context) == null) return
+        if (!LocationSync.isEnabled(context) || !LocationSync.isPaired(context)) return
         if (!canStartLocationSyncInBackground(context)) return
         runCatching { LocationSync.startService(context) }
     }

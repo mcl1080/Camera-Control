@@ -29,9 +29,8 @@ import android.os.ParcelUuid
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import io.github.mcl1080.cameracontrol.MainActivity
+import io.github.mcl1080.cameracontrol.brandble.CameraBrand
 import io.github.mcl1080.cameracontrol.nikonble.GeoFix
-import io.github.mcl1080.cameracontrol.nikonble.LocationPayloadEncoder
-import io.github.mcl1080.cameracontrol.nikonble.TimePayloadEncoder
 import android.os.SystemClock
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -50,7 +49,7 @@ class LocationSyncService : Service() {
 
     private var scheduler: ScheduledExecutorService? = null
     private var task: ScheduledFuture<*>? = null
-    private var client: NikonBleClient? = null
+    private var client: CameraLink? = null
     private var backoffSeconds = BACKOFF_START_SECONDS
 
     @Volatile
@@ -101,7 +100,7 @@ class LocationSyncService : Service() {
             notification("Starting location sync"),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0,
         )
-        if (LocationSync.savedIdentity(this) == null) {
+        if (!LocationSync.isPaired(this)) {
             status("Pair the camera first")
             stopSelf()
             return START_NOT_STICKY
@@ -197,8 +196,9 @@ class LocationSyncService : Service() {
                 fix == null && newest == null -> status("Waiting for the phone's GPS")
                 fix == null && ageMs(newest!!) > FIX_MAX_AGE_MS -> status("Waiting for a fresh GPS fix")
                 fix == null -> status("GPS too imprecise (±${newest!!.accuracy.toInt()} m); waiting")
+                !c.sendLocation(fix.toGeoFix(), System.currentTimeMillis()) ->
+                    status("Connected; waiting for the camera to ask for location")
                 else -> {
-                    c.writeLocationPayload(LocationPayloadEncoder.encode(fix.toGeoFix()))
                     LocationSync.update {
                         it.copy(
                             connected = true,
@@ -223,7 +223,7 @@ class LocationSyncService : Service() {
      * The camera dropped the Bluetooth link (usually because it was switched off). Runs on
      * the scheduler thread, so it never overlaps a sync cycle.
      */
-    private fun onCameraLost(lost: NikonBleClient) {
+    private fun onCameraLost(lost: CameraLink) {
         if (!running || client !== lost) return
         markDisconnected(CAMERA_LOST_MESSAGE)
         // Replace the pending send with a quick reconnect attempt.
@@ -241,13 +241,35 @@ class LocationSyncService : Service() {
         status(message)
     }
 
-    /** Finds the paired camera's advert and re-runs the handshake with the saved identity. */
-    private fun connectToCamera(): NikonBleClient? {
+    /** Finds the paired camera's advert and reconnects to it. */
+    private fun connectToCamera(): CameraLink? {
+        val saved = LocationSync.savedCamera(this) ?: return connectToNikon()?.let(::NikonLink)
+        status("Looking for the camera")
+        for (attempt in 1..RECONNECT_ATTEMPTS) {
+            if (!running) return null
+            val camera = scanForCamera(SCAN_TIMEOUT_MS, saved.brand, saved.address)
+            if (camera == null) {
+                status("Waiting for the camera to turn on")
+                return null
+            }
+            try {
+                BrandLinks.open(applicationContext, saved, camera, firstTime = false) { status(it) }?.let { return it }
+            } catch (e: Exception) {
+                status("Connect attempt $attempt failed: ${e.message}")
+            }
+            Thread.sleep(RECONNECT_RETRY_DELAY_MS)
+        }
+        status("Couldn't connect to the camera; retrying")
+        return null
+    }
+
+    /** Nikon: re-runs the SnapBridge handshake with the saved identity. */
+    private fun connectToNikon(): NikonBleClient? {
         val (device, nonce) = LocationSync.savedIdentity(this) ?: return null
         status("Looking for the camera")
         for (attempt in 1..RECONNECT_ATTEMPTS) {
             if (!running) return null
-            val camera = scanForCamera(SCAN_TIMEOUT_MS)
+            val camera = scanForCamera(SCAN_TIMEOUT_MS, CameraBrand.NIKON, null)
             if (camera == null) {
                 status("Waiting for the camera to turn on")
                 return null
@@ -270,7 +292,7 @@ class LocationSyncService : Service() {
     }
 
     @Suppress("DEPRECATION")
-    private fun scanForCamera(timeoutMs: Long): BluetoothDevice? {
+    private fun scanForCamera(timeoutMs: Long, brand: CameraBrand, address: String?): BluetoothDevice? {
         val adapter = getSystemService(BluetoothManager::class.java)?.adapter ?: return null
         if (!adapter.isEnabled) return null
         val scanner = adapter.bluetoothLeScanner ?: return null
@@ -281,9 +303,12 @@ class LocationSyncService : Service() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val record = result.scanRecord
                 val name = result.device?.name ?: record?.deviceName
+                val makers = buildMap {
+                    record?.manufacturerSpecificData?.let { m -> for (i in 0 until m.size()) put(m.keyAt(i), m.valueAt(i)) }
+                }
                 val matches = (wantedName != null && name == wantedName) ||
-                    record?.serviceUuids?.any { it.uuid == NikonBleClient.SERVICE_UUID } == true ||
-                    record?.getManufacturerSpecificData(NIKON_COMPANY_ID) != null
+                    (address != null && result.device?.address == address) ||
+                    CameraBrand.recognize(name, record?.serviceUuids?.map { it.uuid }.orEmpty(), makers) == brand
                 if (matches) {
                     found.set(result.device)
                     latch.countDown()
@@ -294,8 +319,13 @@ class LocationSyncService : Service() {
         }
         val filters = buildList {
             wantedName?.let { add(ScanFilter.Builder().setDeviceName(it).build()) }
-            add(ScanFilter.Builder().setServiceUuid(ParcelUuid(NikonBleClient.SERVICE_UUID)).build())
-            add(ScanFilter.Builder().setManufacturerData(NIKON_COMPANY_ID, byteArrayOf()).build())
+            address?.let { add(ScanFilter.Builder().setDeviceAddress(it).build()) }
+            if (brand == CameraBrand.NIKON) {
+                add(ScanFilter.Builder().setServiceUuid(ParcelUuid(NikonBleClient.SERVICE_UUID)).build())
+                add(ScanFilter.Builder().setManufacturerData(CameraBrand.NIKON_COMPANY_ID, byteArrayOf()).build())
+            } else {
+                addAll(CameraPairing.pairingScanFilters())
+            }
         }
         // Scan hard right after a disconnect, then gently while the camera stays off.
         val mode = if (backoffSeconds <= BACKOFF_START_SECONDS) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_BALANCED
@@ -316,8 +346,8 @@ class LocationSyncService : Service() {
     }
 
     /** Sets the camera's clock from the phone; the camera accepts this on each connection. */
-    private fun sendTime(c: NikonBleClient) {
-        runCatching { c.writeTimePayload(TimePayloadEncoder.encode()) }
+    private fun sendTime(c: CameraLink) {
+        runCatching { c.sendTime(System.currentTimeMillis()) }
     }
 
     private fun isAccurate(location: Location) = !location.hasAccuracy() || location.accuracy <= MAX_ACCURACY_M
@@ -370,7 +400,6 @@ class LocationSyncService : Service() {
         private const val CAMERA_LOST_MESSAGE = "Camera disconnected; waiting for it to come back"
         private const val CHANNEL_ID = "location_sync"
         private const val NOTIFICATION_ID = 1001
-        private const val NIKON_COMPANY_ID = 0x0399
         private const val RECONNECT_ATTEMPTS = 4
         private const val RECONNECT_RETRY_DELAY_MS = 1_200L
         private const val SCAN_TIMEOUT_MS = 12_000L
