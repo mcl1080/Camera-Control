@@ -115,6 +115,7 @@ class LocationSyncService : Service() {
         task?.cancel(true)
         scheduler?.shutdownNow()
         scheduler = null
+        client?.onDisconnected = null
         runCatching { client?.close() }
         client = null
         runCatching { getSystemService(LocationManager::class.java).removeUpdates(locationListener) }
@@ -168,6 +169,10 @@ class LocationSyncService : Service() {
         try {
             var c = client
             if (c == null || !c.isConnected()) {
+                if (c != null) {
+                    // The link dropped since the last cycle; show it before scanning again.
+                    markDisconnected(CAMERA_LOST_MESSAGE)
+                }
                 c = connectToCamera()
                 if (c == null) {
                     next = nextBackoff()
@@ -175,6 +180,11 @@ class LocationSyncService : Service() {
                 }
                 client = c
                 backoffSeconds = BACKOFF_START_SECONDS
+                // Hear about the camera switching off straight away, not at the next write.
+                val connected = c
+                connected.onDisconnected = {
+                    runCatching { scheduler?.execute { onCameraLost(connected) } }
+                }
                 LocationSync.update { it.copy(connected = true) }
                 sendTime(c)
                 startLocationUpdates()
@@ -202,15 +212,33 @@ class LocationSyncService : Service() {
             }
         } catch (e: Exception) {
             // A failed write usually means the camera turned off or went out of range.
-            runCatching { client?.close() }
-            client = null
-            LocationSync.update { it.copy(connected = false) }
-            stopLocationUpdates()
-            status("Camera disconnected; waiting for it to come back")
+            markDisconnected(CAMERA_LOST_MESSAGE)
             next = nextBackoff()
         } finally {
             schedule(next)
         }
+    }
+
+    /**
+     * The camera dropped the Bluetooth link (usually because it was switched off). Runs on
+     * the scheduler thread, so it never overlaps a sync cycle.
+     */
+    private fun onCameraLost(lost: NikonBleClient) {
+        if (!running || client !== lost) return
+        markDisconnected(CAMERA_LOST_MESSAGE)
+        // Replace the pending send with a quick reconnect attempt.
+        task?.cancel(false)
+        backoffSeconds = BACKOFF_START_SECONDS
+        schedule(nextBackoff())
+    }
+
+    private fun markDisconnected(message: String) {
+        client?.onDisconnected = null
+        runCatching { client?.close() }
+        client = null
+        LocationSync.update { it.copy(connected = false) }
+        stopLocationUpdates()
+        status(message)
     }
 
     /** Finds the paired camera's advert and re-runs the handshake with the saved identity. */
@@ -339,6 +367,7 @@ class LocationSyncService : Service() {
     }
 
     companion object {
+        private const val CAMERA_LOST_MESSAGE = "Camera disconnected; waiting for it to come back"
         private const val CHANNEL_ID = "location_sync"
         private const val NOTIFICATION_ID = 1001
         private const val NIKON_COMPANY_ID = 0x0399

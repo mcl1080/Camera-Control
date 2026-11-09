@@ -90,6 +90,16 @@ class NikonBleClient private constructor(
     private val descriptorStatus = AtomicInteger(BluetoothGatt.GATT_FAILURE)
     private val servicesResolved = AtomicBoolean(false)
 
+    /** True from the moment the link comes up until Android reports it dropped. */
+    private val linkUp = AtomicBoolean(false)
+
+    /**
+     * Called (on a Bluetooth binder thread) when an established link drops on its own,
+     * for example because the camera was switched off. Not called for [close].
+     */
+    @Volatile
+    var onDisconnected: (() -> Unit)? = null
+
     private val pairIndications = LinkedBlockingQueue<ByteArray>()
     private val not1Success = AtomicBoolean(false)
 
@@ -126,7 +136,8 @@ class NikonBleClient private constructor(
         return synchronized(stateLock) { servicesResolved.get() && geoChar != null }
     }
 
-    fun isConnected(): Boolean = synchronized(stateLock) { gatt != null && geoChar != null }
+    fun isConnected(): Boolean =
+        synchronized(stateLock) { gatt != null && geoChar != null && linkUp.get() }
 
     /**
      * Runs the full 4-stage PAIR handshake over char 0x2000, subscribing to
@@ -228,12 +239,16 @@ class NikonBleClient private constructor(
     @SuppressLint("MissingPermission")
     fun close() {
         synchronized(stateLock) {
-            gatt?.disconnect()
-            gatt?.close()
+            // Forget the handle first, so a late disconnect callback for it is ignored.
+            val old = gatt
             gatt = null
+            linkUp.set(false)
+            old?.disconnect()
+            old?.close()
             pairChar = null
             idChar = null
             geoChar = null
+            timeChar = null
             not1Char = null
             connectLatch = null
             writeLatch = null
@@ -300,18 +315,25 @@ class NikonBleClient private constructor(
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                connectLatch?.countDown()
+            // Ignore callbacks for a handle we've already closed or replaced.
+            if (synchronized(stateLock) { gatt !== this@NikonBleClient.gatt }) return
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothGatt.STATE_CONNECTED) {
+                linkUp.set(true)
+                if (!gatt.discoverServices()) {
+                    connectLatch?.countDown()
+                }
                 return
             }
-            when (newState) {
-                BluetoothGatt.STATE_CONNECTED -> {
-                    if (!gatt.discoverServices()) {
-                        connectLatch?.countDown()
-                    }
-                }
-                BluetoothGatt.STATE_DISCONNECTED -> connectLatch?.countDown()
-            }
+            // Anything else means the link is gone. When the camera powers off this usually
+            // arrives as an error status (8, link supervision timeout) rather than a clean
+            // STATE_DISCONNECTED, so both cases are handled the same way.
+            val wasUp = linkUp.getAndSet(false)
+            Log.i(TAG, "link down (status=$status, state=$newState, wasUp=$wasUp)")
+            // Wake anything blocked on the link so it fails now instead of timing out.
+            connectLatch?.countDown()
+            writeLatch?.countDown()
+            descriptorLatch?.countDown()
+            if (wasUp) onDisconnected?.invoke()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
