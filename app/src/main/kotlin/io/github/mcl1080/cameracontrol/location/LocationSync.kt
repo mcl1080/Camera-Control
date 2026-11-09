@@ -144,6 +144,8 @@ object LocationSync {
         prefs(context).edit()
             .remove(PREF_CAMERA_NAME).remove(PREF_PAIRED_DEVICE).remove(PREF_PAIRED_NONCE)
             .remove(PREF_BRAND).remove(PREF_ADDRESS).remove(PREF_FUJI_VARIANT).remove(PREF_FUJI_TOKEN)
+            // Pick a fresh name next time, so a re-pair picks up a renamed app.
+            .remove(PREF_CONTROLLER_NAME)
             .apply()
         _status.update { LocationSyncStatus(intervalSeconds = it.intervalSeconds) }
     }
@@ -154,7 +156,7 @@ object LocationSync {
     fun controllerName(context: Context): String {
         val p = prefs(context)
         p.getString(PREF_CONTROLLER_NAME, null)?.let { return it }
-        val name = "CameraControl-%04x".format(SecureRandom().nextInt(0x10000))
+        val name = "Latlo-%04x".format(SecureRandom().nextInt(0x10000))
         p.edit().putString(PREF_CONTROLLER_NAME, name).apply()
         return name
     }
