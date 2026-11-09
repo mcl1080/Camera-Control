@@ -30,7 +30,7 @@ class PtpIpConnection(
     private val port: Int = DEFAULT_PORT,
     private val socketFactory: SocketFactory = SocketFactory.getDefault(),
     private val guid: UUID = UUID.randomUUID(),
-    private val friendlyName: String = "Camera Control",
+    private val friendlyName: String = "Latlo",
     private val connectTimeoutMs: Int = 5_000,
     private val readTimeoutMs: Int = 15_000,
 ) : Closeable {
