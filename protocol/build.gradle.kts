@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-// Plain Kotlin/JVM library: the camera protocol, with no Android dependencies,
-// so it can be unit tested on any machine against a fake camera.
+// Plain Kotlin/JVM library: the Bluetooth camera protocols, with no Android dependencies,
+// so they can be unit tested on any machine.
 plugins {
     alias(libs.plugins.kotlin.jvm)
 }

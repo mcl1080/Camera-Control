@@ -1,12 +1,11 @@
-**This is a test build.** Latlo is a wireless remote and clock/GPS sync app for cameras. It has been used on a Nikon Z5; everything else is untested, and that's what we'd love your help with.
+**This is a test build.** Latlo sends your phone's location and time to your camera over Bluetooth, so every photo is geotagged and timestamped. It has been used on a Nikon Z5; the other brands are untested, and that's what we'd love your help with.
 
 ## What to test
 
-| Feature | Cameras | Status |
-|---|---|---|
-| Wi-Fi remote (live view, shutter, exposure settings, clock sync) | Nikon Z | Tested on a Z5 |
-| Bluetooth location and time sync | Nikon Z | Tested on a Z5 |
-| Bluetooth location and time sync | Sony Alpha / ZV, Canon EOS / PowerShot, Fujifilm X / GFX, Ricoh GR III / IIIx / IV | **Untested, please try it** |
+| Cameras | Status |
+|---|---|
+| Nikon Z | Tested on a Z5 |
+| Sony Alpha / ZV, Canon EOS / PowerShot, Fujifilm X / GFX, Ricoh GR III / IIIx / IV | **Untested, please try it** |
 
 Pairing steps for each brand are in the [README](https://github.com/mcl1080/Camera-Control#location-sync-bluetooth). Pairing Latlo replaces your camera's pairing with the maker's app, so you'll need to pair that app again afterwards if you want to go back.
 

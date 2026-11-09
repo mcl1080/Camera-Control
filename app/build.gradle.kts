@@ -55,7 +55,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":ptpip"))
+    implementation(project(":protocol"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
