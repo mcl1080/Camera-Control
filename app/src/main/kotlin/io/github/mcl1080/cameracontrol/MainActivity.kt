@@ -507,6 +507,15 @@ class LocationActions(
     val onAllowBackground: () -> Unit,
 )
 
+/** Where each brand's Bluetooth pairing mode is, roughly; menus differ between models. */
+private val PAIRING_HOW_TO = listOf(
+    "Nikon" to "Setup > Connect to smart device > Pairing (Bluetooth) > Start pairing",
+    "Sony" to "Network > Bluetooth: turn Bluetooth Function on, then Pairing; also turn on Location Info. Link",
+    "Canon" to "Wireless settings > Connect to smartphone > Add a device to connect",
+    "Fujifilm" to "Network/USB settings > Bluetooth/Smartphone setting > Pairing registration",
+    "Ricoh" to "Settings > Bluetooth > Pairing",
+)
+
 /**
  * Bluetooth location sync: pair once, then the phone's position is sent to the camera every
  * few seconds in the background, so each photo is tagged where it was taken. Works without
@@ -523,10 +532,17 @@ private fun LocationScreen(status: LocationSyncStatus, actions: LocationActions)
 
     if (!status.paired) {
         InfoCard("Pair with the camera") {
-            Step(1, "On the camera, open Setup menu > Connect to smart device > Pairing (Bluetooth) > Start pairing.")
-            Step(2, "Tap Pair camera and allow the permissions. Accept the Bluetooth pairing request if Android shows one.")
+            Step(1, "Put the camera in Bluetooth pairing mode (menu names vary by model):")
+            for ((brand, how) in PAIRING_HOW_TO) {
+                Text(
+                    "$brand: $how",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Step(2, "Tap Pair camera and allow the permissions. Accept the Bluetooth pairing request if Android or the camera shows one.")
             Text(
-                "This replaces the camera's pairing with SnapBridge.",
+                "This replaces the camera's pairing with its maker's app (SnapBridge, Creators' App, Camera Connect, XApp or GR World).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -557,7 +573,7 @@ private fun LocationScreen(status: LocationSyncStatus, actions: LocationActions)
     }
 
     InfoCard("Status") {
-        InfoRow("Camera", status.cameraName ?: "Paired")
+        InfoRow("Camera", listOfNotNull(status.brand?.displayName, status.cameraName).joinToString(" ").ifEmpty { "Paired" })
         if (status.running) {
             InfoRow("Camera link", if (status.connected) "Connected" else "Searching")
             InfoRow(
