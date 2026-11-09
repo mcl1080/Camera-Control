@@ -1,0 +1,57 @@
+name: Camera test report
+description: Tell us how Latlo worked (or didn't) with your camera.
+title: "[Test] <camera model>: <works / doesn't work>"
+labels: ["camera-test"]
+body:
+  - type: input
+    id: camera
+    attributes:
+      label: Camera model
+      placeholder: e.g. Sony A7 IV
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Camera firmware version
+      placeholder: e.g. 3.01
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model and Android version
+      placeholder: e.g. Pixel 8, Android 15
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Latlo version
+      description: From the release you downloaded, e.g. 0.3.0
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What did you try?
+      options:
+        - label: Bluetooth pairing
+        - label: Location sync (photos geotagged)
+        - label: Clock sync
+        - label: Wi-Fi remote
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall result
+      options:
+        - Everything I tried worked
+        - Some things worked
+        - Nothing worked
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened?
+      description: Which steps worked or failed, any error messages, and whether photos had the right location and time. Screenshots of the app's log are very helpful.
+    validations:
+      required: true

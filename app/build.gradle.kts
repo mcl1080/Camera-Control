@@ -12,13 +12,34 @@ android {
         applicationId = "io.github.mcl1080.cameracontrol"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes these from the release tag (see .github/workflows/release.yml).
+        versionCode = (findProperty("latlo.versionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("latlo.versionName") as String?) ?: "0.1.0"
+    }
+
+    // Release signing comes from environment variables so the keystore never lives in the
+    // repo. Without them, a release build is signed with the debug key so it still installs
+    // (fine for local testing, but not for published releases: the release workflow requires them).
+    val releaseKeystore = System.getenv("LATLO_KEYSTORE_PATH")
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("LATLO_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("LATLO_KEY_ALIAS")
+                keyPassword = System.getenv("LATLO_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {

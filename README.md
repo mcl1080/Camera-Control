@@ -29,6 +29,15 @@ exposure settings, and clock and GPS sync from the phone. It starts with the Nik
 | `ptpip/` | The camera protocol (PTP/IP, which Nikon uses over Wi-Fi) as plain Kotlin with no Android code, so it can be tested on a computer against a simulated camera. |
 | `app/`   | The Android app (Kotlin + Jetpack Compose). |
 
+## Trying a test build
+
+Download the latest APK from [Releases](https://github.com/mcl1080/Camera-Control/releases) and
+open it on your phone (Android 10 or newer) to install it; the release page has step-by-step
+instructions. If you try it with a camera, please
+[send a test report](https://github.com/mcl1080/Camera-Control/issues/new?template=camera-test-report.yml),
+especially for Sony, Canon, Fujifilm and Ricoh, which haven't been tried yet.
+How releases are made is in [RELEASING.md](RELEASING.md).
+
 ## Building and running
 
 1. Install Android Studio and open this folder (**File > Open**). Let it sync; if it offers
