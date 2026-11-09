@@ -42,19 +42,20 @@ build signed with a new key.
 ## Making a release
 
 1. Make sure `main` has what you want to release.
-2. Tag it and push the tag:
+2. On GitHub, open **Actions > Build APK > Run workflow**, keep the branch on `main`, type the
+   version (for example `0.3.0`) and press **Run workflow**.
 
-   ```sh
-   git tag v0.3.0
-   git push origin v0.3.0
-   ```
+   Or push a tag from your computer instead: `git tag v0.3.0` then `git push origin v0.3.0`.
+3. Wait for the run to finish (about 5 minutes).
+4. Open **Releases**, check the draft (notes, APK attached), edit the notes if you like, and
+   press **Publish release**. Publishing creates the `v0.3.0` tag if it doesn't exist yet.
 
    Don't create the release from GitHub's **Draft a new release** page: the workflow makes it.
-3. Wait for the **Build APK** run under **Actions** to finish (about 5 minutes).
-4. Open **Releases**, check the draft (notes, APK attached), edit the notes if you like, and
-   press **Publish release**.
 
-The version name comes from the tag (`v0.3.0` becomes `0.3.0`) and the version code from the
+If the run fails at **Restore the signing keystore**, the error says which secret to fix. After
+fixing it, start the run again from step 2 (or press **Re-run jobs** on a tag run).
+
+The version name comes from the tag or the version you type (`v0.3.0` becomes `0.3.0`) and the version code from the
 workflow's run number, so each build is newer than the last.
 
 Every pull request also builds an APK; it's attached to the run under **Actions > the run >
