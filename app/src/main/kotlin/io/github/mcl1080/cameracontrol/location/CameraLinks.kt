@@ -1,4 +1,4 @@
-// Camera Control. Copyright (C) 2026 the Camera Control authors.
+// Latlo. Copyright (C) 2026 the Latlo authors.
 // Licensed under the GNU General Public License, version 3; see LICENSE.
 //
 // Connection steps for Sony and Ricoh follow CameraSync (https://github.com/rock3r/CameraSync,

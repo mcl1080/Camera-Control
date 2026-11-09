@@ -1,4 +1,4 @@
-# Camera Control
+# Latlo
 
 An Android app that works as a wireless remote for your camera: live view, shutter,
 exposure settings, and clock and GPS sync from the phone. It starts with the Nikon Z5.
@@ -42,7 +42,7 @@ Run the protocol tests with `./gradlew :ptpip:test`.
 1. On the camera: **Setup menu > Connect to smart device > Wi-Fi connection > Establish Wi-Fi connection**.
    The camera shows its network name (SSID) and password.
 2. On the phone, join that Wi-Fi network in Settings. Android may warn that it has no internet; choose to stay connected.
-3. Open Camera Control, tap **Wi-Fi remote** on the home page, then tap **Connect**. The camera's address is normally `192.168.1.1`.
+3. Open Latlo, tap **Wi-Fi remote** on the home page, then tap **Connect**. The camera's address is normally `192.168.1.1`.
 4. The first time, the camera may ask you to confirm the connection on its screen.
 
 If it fails, the log on screen shows each step and the camera's error code.
@@ -77,7 +77,7 @@ phone restarts, tap **Allow all the time** in the Location card and choose that 
 
 ## License
 
-Camera Control is free software under the GNU General Public License v3.0 (see `LICENSE`).
+Latlo is free software under the GNU General Public License v3.0 (see `LICENSE`).
 The Nikon Bluetooth pairing and location code is ported from
 [nikongeotag](https://github.com/rjmendez/nikongeotag) (GPL-3.0), which builds on
 nsg (AGPL-3.0) and furble (MIT). The Sony and Ricoh protocols come from

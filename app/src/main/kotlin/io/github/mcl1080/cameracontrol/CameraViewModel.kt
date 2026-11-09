@@ -139,7 +139,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 host = _state.value.cameraIp,
                 socketFactory = wifi?.socketFactory ?: SocketFactory.getDefault(),
                 guid = phoneGuid(app),
-                friendlyName = "Camera Control (${android.os.Build.MODEL})",
+                friendlyName = "Latlo (${android.os.Build.MODEL})",
             )
             val cam = NikonCamera(connection).also { it.log = ::log }
             try {
